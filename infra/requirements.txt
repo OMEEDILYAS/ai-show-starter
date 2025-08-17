@@ -1,0 +1,9 @@
+python-dotenv==1.0.1
+pydantic==2.8.2
+pyyaml==6.0.2
+pandas==2.2.2
+numpy==2.0.1
+moviepy==1.0.3
+ffmpeg-python==0.2.0
+requests==2.32.3
+tenacity==8.5.0

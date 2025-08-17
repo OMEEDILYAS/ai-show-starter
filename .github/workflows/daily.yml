@@ -1,0 +1,74 @@
+name: daily-episodes
+on:
+  schedule:
+    - cron: "0 15 * * *"   # daily at 15:00 UTC (~10:00 AM CT during daylight savings)
+  workflow_dispatch:
+jobs:
+  episode:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        series: [ai_teacher, ai_drama, ai_memes]  # add up to 6
+    concurrency:
+      group: daily-${{ matrix.series }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('infra/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install deps
+        run: pip install -r infra/requirements.txt
+
+      - name: Plan episode
+        env:
+          SERIES: ${{ matrix.series }}
+        run: python planner/plan_next.py --series "$SERIES"
+
+      - name: Generate assets
+        env:
+          SERIES: ${{ matrix.series }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python generator/gen_assets.py --series "$SERIES"
+
+      - name: Assemble video
+        env:
+          SERIES: ${{ matrix.series }}
+        run: python assembly/build_video.py --series "$SERIES"
+
+      - name: Validate video
+        env:
+          SERIES: ${{ matrix.series }}
+        run: python assembly/validate_video.py --series "$SERIES"
+
+      - name: Publish
+        if: ${{ !cancelled() }}
+        env:
+          SERIES: ${{ matrix.series }}
+          IG_APP_ID: ${{ secrets.IG_APP_ID }}
+          IG_APP_SECRET: ${{ secrets.IG_APP_SECRET }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_PAGE_ID: ${{ secrets.IG_PAGE_ID }}
+          TIKTOK_API_KEY: ${{ secrets.TIKTOK_API_KEY }}
+        run: python publisher/post_all.py --series "$SERIES"
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.series }}-output
+          path: out/${{ matrix.series }}/final/*.mp4
+
+      - name: Collect analytics (non-blocking)
+        if: always()
+        run: python analytics/pull_metrics.py --series "$SERIES" || true

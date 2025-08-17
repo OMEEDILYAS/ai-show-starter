@@ -1,0 +1,8 @@
+day,slug,title,notes
+1,vectors-intro,What is a vector?,arrows moving; 2D examples
+2,dot-product,Dot product via projection,cosine angle visual
+3,cross-product,Cross product intuition,3D right-hand rule
+4,matrix-intro,What is a matrix?,grids; transform intuition
+5,lin-transforms,Linear transforms,rotate/scale a square
+6,eigen-basics,Eigenvectors & eigenvalues,kept direction demo
+7,apps,Real uses of linear algebra,recommendations/images

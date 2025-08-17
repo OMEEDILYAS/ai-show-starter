@@ -1,0 +1,19 @@
+series:
+  ai_teacher:
+    title: "AI Linear Algebra Daily"
+    platforms: ["instagram","tiktok"]
+    aspect_ratio: "9:16"
+    target_len_sec: 45
+    topic_source: "config/topics/linear_algebra_week1.csv"
+  ai_drama:
+    title: "Neon Nights (AI Mini-Drama)"
+    platforms: ["tiktok"]
+    aspect_ratio: "9:16"
+    target_len_sec: 50
+    topic_source: ""
+  ai_memes:
+    title: "AI Meme News"
+    platforms: ["instagram"]
+    aspect_ratio: "9:16"
+    target_len_sec: 30
+    topic_source: ""
