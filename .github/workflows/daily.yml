@@ -3,6 +3,9 @@ on:
   schedule:
     - cron: "0 15 * * *"   # daily at 15:00 UTC (~10:00 AM CT during daylight savings)
   workflow_dispatch:
+permissions:
+  contents: write
+
 jobs:
   episode:
     runs-on: ubuntu-latest
@@ -13,6 +16,8 @@ jobs:
     concurrency:
       group: daily-${{ matrix.series }}
       cancel-in-progress: false
+    timeout-minutes: 30
+
     steps:
       - uses: actions/checkout@v4
 
@@ -30,6 +35,16 @@ jobs:
       - name: Install deps
         run: pip install -r infra/requirements.txt
 
+      - name: Install FFmpeg (ffmpeg + ffprobe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+      - name: (Optional) Install espeak-ng
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y espeak-ng
+
       - name: Plan episode
         env:
           SERIES: ${{ matrix.series }}
@@ -39,10 +54,10 @@ jobs:
         env:
           SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-4o
         run: python planner/agent_director.py --series "$SERIES"
 
-
-      - name: Generate assets
+      - name: Generate assets (with OpenAI TTS)
         env:
           SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -60,10 +75,91 @@ jobs:
           SERIES: ${{ matrix.series }}
         run: python assembly/validate_video.py --series "$SERIES"
 
-      - name: Publish
+      # ---------- GUARDS ----------
+      - name: Guard — skip if repo is private
+        id: vis
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRIV=$(gh api repos/${{ github.repository }} --jq .private)
+          echo "private=$PRIV"
+          if [ "$PRIV" = "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Repo is private; skipping hosting/posting."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Guard — check IG publishing quota (24h)
+        id: quota
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: |
+          python - <<'PY'
+          import os, requests, json
+          token = os.environ["IG_ACCESS_TOKEN"]
+          igid  = os.environ["IG_USER_ID"]
+          url = f"https://graph.facebook.com/v19.0/{igid}/content_publishing_limit"
+          r = requests.get(url, params={"fields": "quota_usage,config", "access_token": token}, timeout=30)
+          data = r.json()
+          quota_total = 100; quota_usage = 0
+          try:
+            row = (data.get("data") or [{}])[0]
+            quota_usage = int(row.get("quota_usage", 0))
+            cfg = (row.get("config") or [{}])[0]
+            quota_total = int(cfg.get("quota_total", quota_total))
+          except Exception:
+            print("[guard] unexpected response:", json.dumps(data))
+          remaining = max(quota_total - quota_usage, 0)
+          allow = remaining > 0
+          print(f"[guard] IG quota used={quota_usage}/{quota_total} remaining={remaining}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+            f.write(f"allow={'true' if allow else 'false'}\n")
+            f.write(f"remaining={remaining}\n")
+          PY
+      # ---------- /GUARDS ----------
+
+      - name: Checkout gh-pages branch (separate workdir)
+        if: ${{ steps.vis.outputs.skip != 'true' && !cancelled() }}
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: site
+
+      - name: Publish MP4 to gh-pages
+        id: publish_url
+        if: ${{ steps.vis.outputs.skip != 'true' && !cancelled() }}
+        run: |
+          set -e
+          FILE=$(ls -t out/${{ matrix.series }}/final/*.mp4 | head -n 1)
+          NAME=$(basename "$FILE")
+          mkdir -p site/reels/${{ matrix.series }}
+          cp "$FILE" "site/reels/${{ matrix.series }}/$NAME"
+
+          cd site
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "reels/${{ matrix.series }}/$NAME"
+          git commit -m "reel: $NAME (${{ matrix.series }}) from run ${{ github.run_id }}" || true
+          git push
+
+          echo "url=https://omeedilyas.github.io/ai-show-starter/reels/${{ matrix.series }}/$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Post to Instagram (ai_teacher only) — REAL
+        if: ${{ matrix.series == 'ai_teacher' && steps.vis.outputs.skip != 'true' && steps.quota.outputs.allow == 'true' && !cancelled() }}
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: |
+          echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
+          python publisher/post_instagram.py "${{ steps.publish_url.outputs.url }}" "Daily episode 🚀 #ai #reels #${{ matrix.series }}"
+
+      - name: Publish (DRY RUN)
         if: ${{ !cancelled() }}
         env:
           SERIES: ${{ matrix.series }}
+          DRY_RUN: "true"
           IG_APP_ID: ${{ secrets.IG_APP_ID }}
           IG_APP_SECRET: ${{ secrets.IG_APP_SECRET }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
