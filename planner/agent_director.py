@@ -89,4 +89,6 @@ def main():
     print("[agent] updated:", plan_path)
 
 if __name__ == "__main__":
+    if not args.series:
+        raise SystemExit("[agent] --series is required and cannot be empty")
     main()
