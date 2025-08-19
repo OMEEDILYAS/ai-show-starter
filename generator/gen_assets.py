@@ -1,44 +1,69 @@
-import json, argparse
+# generator/gen_assets.py
+import argparse
+import json
+import os
 from pathlib import Path
+import textwrap
 
-SCRIPT_TMPL = """Title: {title}
-Hook: Today in {series}, {title}.
-Body: {body}
-CTA: Follow for tomorrow's episode.
-"""
+from generator.tts_openai import synthesize
 
-def synthesize_script(plan):
-    title = plan["title"] or "A quick lesson"
-    if plan["series"] == "ai_teacher":
-        body = "Explain the concept with one concrete visual example and one short tip."
-    else:
-        body = "Generate a fun 45-second narrative consistent with the series theme."
-    return SCRIPT_TMPL.format(title=title, series=plan["series"], body=body)
+def ensure_dir(p: Path):
+    p.mkdir(parents=True, exist_ok=True)
 
-def synthesize_audio(text_path, out_wav):
-    Path(out_wav).write_bytes(b"FAKE_WAV")
-    return out_wav
+def load_plan(series: str) -> tuple[dict, Path]:
+    out_dir = Path("out") / series
+    # Pick most recent episode plan.json
+    plan_paths = sorted(out_dir.glob("ep_*/plan.json"))
+    if not plan_paths:
+        raise SystemExit(f"No plan.json found in out/{series}/ep_*/")
+    plan_path = plan_paths[-1]
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    return plan, plan_path
 
-def synthesize_visuals(assets_dir):
-    (assets_dir / "bg.png").write_bytes(b"FAKE_PNG")
+def write_text(path: Path, content: str):
+    path.write_text(content, encoding="utf-8")
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--series", required=True)
     args = ap.parse_args()
 
-    plan_path = sorted(Path(f"out/{args.series}").glob("ep_*/plan.json"))[-1]
-    plan = json.loads(Path(plan_path).read_text(encoding="utf-8"))
-    assets_dir = Path(plan_path).parent / "assets"
-    assets_dir.mkdir(exist_ok=True)
+    series = args.series
+    plan, plan_path = load_plan(series)
 
-    script_txt = synthesize_script(plan)
-    (assets_dir / "script.txt").write_text(script_txt, encoding="utf-8")
+    # Prefer AI-enriched fields if present (from agent_director), fallback to seed fields
+    title = plan.get("ai_title") or plan.get("title") or f"{series} daily"
+    overlay = plan.get("ai_overlay") or plan.get("overlay") or "Learn something new!"
+    narration = plan.get("ai_narration") or plan.get("narration") or plan.get("script") or "Welcome to today’s episode."
 
-    synthesize_visuals(assets_dir)
-    synthesize_audio(assets_dir / "script.txt", assets_dir / "voice.wav")
+    # Normalize narration length for ≈45s (light touch)
+    narration = " ".join(narration.split())
+    narration = textwrap.shorten(narration, width=1200, placeholder="…")
 
-    print(f"[gen] assets ready at {assets_dir}")
+    ep_dir = Path(plan_path).parent
+    assets_dir = ep_dir / "assets"
+    ensure_dir(assets_dir)
+
+    # Save text assets for downstream steps
+    write_text(assets_dir / "title.txt", title)
+    write_text(assets_dir / "overlay.txt", overlay)
+    write_text(assets_dir / "narration.txt", narration)
+
+    # Generate voice-over with OpenAI TTS → voice.wav
+    voice_path = assets_dir / "voice.wav"
+    print(f"[TTS] Synthesizing VO to {voice_path} …")
+    synthesize(narration, str(voice_path))
+    print("[TTS] Done.")
+
+    # (Optional) placeholder background music selection can be added later
+    # For now, assembly/build_video.py should detect and mix voice.wav if present.
+
+    # Update plan with resolved fields so downstream sees consistent values
+    plan["resolved_title"] = title
+    plan["resolved_overlay"] = overlay
+    plan["resolved_narration"] = narration
+    plan_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+    print(f"[gen_assets] Wrote assets in {assets_dir}")
 
 if __name__ == "__main__":
     main()
