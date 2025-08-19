@@ -1,10 +1,14 @@
-name: Test OK
+name: Test OpenAI Key
 
 on:
   workflow_dispatch:
 
 jobs:
-  t:
+  test-key:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "it works"
+      - uses: actions/checkout@v4
+      - name: Print OpenAI key length (not the key itself!)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: echo "Key length: ${#OPENAI_API_KEY}"
