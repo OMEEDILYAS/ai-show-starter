@@ -35,10 +35,18 @@ jobs:
           SERIES: ${{ matrix.series }}
         run: python planner/plan_next.py --series "$SERIES"
 
+      - name: Director Agent
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python planner/agent_director.py --series "$SERIES"
+
+
       - name: Generate assets
         env:
           SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_TTS_MODEL: gpt-4o-mini-tts
+          OPENAI_TTS_VOICE: alloy
         run: python generator/gen_assets.py --series "$SERIES"
 
       - name: Assemble video
