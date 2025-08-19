@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import textwrap
 
-from generator.tts_openai import synthesize
+from tts_openai import synthesize
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
