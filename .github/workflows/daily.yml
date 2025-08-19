@@ -37,6 +37,7 @@ jobs:
 
       - name: Director Agent
         env:
+          SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python planner/agent_director.py --series "$SERIES"
 
