@@ -1,5 +1,6 @@
-import argparse, json, os, requests
+import argparse, json, os, subprocess, sys
 from pathlib import Path
+import requests  # needed for API call
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
@@ -37,22 +38,48 @@ def call_openai(prompt: str):
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
+def ensure_plan(series: str) -> Path:
+    out_dir = Path("out") / series
+    plans = sorted(out_dir.glob("ep_*/plan.json"))
+    if plans:
+        return plans[-1]
+
+    # No plan.json yet → call planner
+    print(f"[agent] No plan.json found for {series}. Running planner…")
+    res = subprocess.run(
+        [sys.executable, "planner/plan_next.py", "--series", series],
+        capture_output=True, text=True
+    )
+    if res.returncode != 0:
+        print(res.stdout)
+        print(res.stderr, file=sys.stderr)
+        raise SystemExit(f"[agent] planner failed for {series} (exit {res.returncode})")
+
+    plans = sorted(out_dir.glob("ep_*/plan.json"))
+    if not plans:
+        raise SystemExit(f"[agent] planner ran but still no plan.json in out/{series}/ep_*/")
+    return plans[-1]
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--series", required=True)
     args = ap.parse_args()
-    out_dir = Path(f"out/{args.series}")
-    plan_path = sorted(out_dir.glob("ep_*/plan.json"))[-1]
+
+    plan_path = ensure_plan(args.series)
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
 
     prompt = USER_TMPL.format(
         series=args.series,
         epnum=plan.get("episode", 1),
         seed_title=plan.get("title", "Daily topic"),
-        theme=plan.get("theme", plan.get("series", args.series))
+        theme=plan.get("theme", plan.get("series", args.series)),
     )
     content = call_openai(prompt)
-    data = json.loads(content)
+    try:
+        data = json.loads(content)
+    except Exception:
+        # If model returns non-JSON, keep original plan (fail-soft)
+        data = {}
 
     plan["ai_title"] = data.get("title", plan.get("title"))
     plan["ai_overlay"] = data.get("overlay", plan.get("overlay", "Quick lesson."))
