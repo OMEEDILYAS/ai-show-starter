@@ -14,7 +14,7 @@ def sh(cmd):
 
 def ffprobe_duration(path: Path) -> float:
     cmd = [
-        FFP PROBE, "-v", "error",
+        FFPROBE, "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
         str(path)
@@ -40,8 +40,8 @@ def main():
 
     # inputs
     voice = assets / "voice.wav"
-    overlay_txt = (assets / "overlay.txt")
-    title_txt = (assets / "title.txt")
+    overlay_txt = assets / "overlay.txt"
+    title_txt = assets / "title.txt"
 
     if not voice.exists():
         raise SystemExit(f"voice track missing: {voice}")
@@ -57,7 +57,6 @@ def main():
     out_mp4 = final_dir / f"{ep_dir.name}.mp4"
 
     # Build: 9:16 1080x1920 solid bg for 'dur' seconds; draw title and overlay; mux voice
-    # fonts: use DejaVuSans (installed in workflow)
     draw = (
         f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
         f"text='{title[:64].replace(':','\\:').replace(\"'\",\"\\'\")}':"
@@ -69,11 +68,12 @@ def main():
 
     cmd = [
         FFMPEG, "-y",
-        "-f", "lavfi", "-i", f"color=size=1080x1920:rate=30:color=black",
+        "-f", "lavfi", "-i", "color=size=1080x1920:rate=30:color=black",
         "-i", str(voice),
         "-t", f"{dur:.3f}",
         "-filter:v", draw,
-        "-c:v", "libx264", "-profile:v", "baseline", "-level", "4.0", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-movflags", "+faststart",
+        "-c:v", "libx264", "-profile:v", "baseline", "-level", "4.0",
+        "-pix_fmt", "yuv420p", "-preset", "veryfast", "-movflags", "+faststart",
         "-c:a", "aac", "-b:a", "128k",
         "-shortest",
         str(out_mp4)
