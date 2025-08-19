@@ -89,6 +89,11 @@ def main():
     print("[agent] updated:", plan_path)
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--series", required=True)
+    args = parser.parse_args()
+    
     if not args.series:
         raise SystemExit("[agent] --series is required and cannot be empty")
     main()
