@@ -22,8 +22,18 @@ def ffprobe_duration(path: Path) -> float:
     out = subprocess.check_output(cmd, text=True).strip()
     try:
         return float(out)
-    except:
+    except Exception:
         return 0.0
+
+def sanitize(txt: str, max_len: int) -> str:
+    """Escape characters that break ffmpeg drawtext and clamp length."""
+    return (
+        (txt or "")[:max_len]
+        .replace("\\", "\\\\")   # escape backslashes first
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace("%", "\\%")
+    )
 
 def main():
     ap = argparse.ArgumentParser()
@@ -53,16 +63,20 @@ def main():
     overlay = overlay_txt.read_text(encoding="utf-8").strip() if overlay_txt.exists() else ""
     title = title_txt.read_text(encoding="utf-8").strip() if title_txt.exists() else "Daily Episode"
 
-    # output
+    # sanitize for drawtext
+    title_safe = sanitize(title, 64)
+    overlay_safe = sanitize(overlay, 120)
+
+    # output path
     out_mp4 = final_dir / f"{ep_dir.name}.mp4"
 
-    # Build: 9:16 1080x1920 solid bg for 'dur' seconds; draw title and overlay; mux voice
+    # build: 9:16 1080x1920 solid bg for 'dur' seconds; draw title and overlay; mux voice
     draw = (
         f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        f"text='{title[:64].replace(':','\\:').replace(\"'\",\"\\'\")}':"
+        f"text='{title_safe}':"
         f"fontcolor=white:fontsize=64:x=(w-text_w)/2:y=120,"
         f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        f"text='{overlay[:120].replace(':','\\:').replace(\"'\",\"\\'\")}':"
+        f"text='{overlay_safe}':"
         f"fontcolor=white:fontsize=48:x=(w-text_w)/2:y=h-300"
     )
 
