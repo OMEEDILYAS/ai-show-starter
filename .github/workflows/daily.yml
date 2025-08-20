@@ -81,7 +81,7 @@ jobs:
           SERIES: ${{ matrix.series }}
         run: python assembly/validate_video.py --series "$SERIES"
 
-      - name: Debug: list out dir (always)
+      - name: Debug list out dir (always)
         if: always()
         run: |
           echo "Tree for series=${{ matrix.series }}:"
