@@ -62,7 +62,7 @@ jobs:
           SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_TTS_MODEL: gpt-4o-mini-tts
-          OPENAI_TTS_VOICE: alloy
+          OPENAI_TTS_VOICE: aria # we can have any of those: alloy, verse, aria
         run: python generator/gen_assets.py --series "$SERIES"
 
       - name: Assemble video
