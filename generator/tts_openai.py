@@ -3,7 +3,7 @@ import os
 from openai import OpenAI
 
 OPENAI_TTS_MODEL = os.environ.get("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
-OPENAI_TTS_VOICE = os.environ.get("OPENAI_TTS_VOICE", "alloy") #all alloy, verse, aria
+OPENAI_TTS_VOICE = os.environ.get("OPENAI_TTS_VOICE", "verse") #alloy, verse, sage
 
 def synthesize(text: str, out_path: str) -> None:
     """
