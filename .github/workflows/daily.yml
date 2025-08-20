@@ -85,12 +85,12 @@ jobs:
           SERIES: ${{ matrix.series }}
         run: python assembly/validate_video.py --series "$SERIES"
 
-      - name: Debug: list out dir
+      - name: Debug list out dir
         if: always()
         run: |
           echo "Tree for this series:"
           find out/${{ matrix.series }} -maxdepth 3 -type f -print || true
-          
+
       # ---------- GUARDS ----------
       - name: Guard — skip if repo is private
         id: vis
