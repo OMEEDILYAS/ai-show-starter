@@ -65,6 +65,16 @@ jobs:
           OPENAI_TTS_VOICE: verse  # can be alloy, verse, sage
         run: python generator/gen_assets.py --series "$SERIES"
 
+      - name: Generate background
+        env:
+          SERIES: ${{ matrix.series }}
+        run: python generator/gen_background.py --series "$SERIES"
+
+      - name: Make captions (SRT)
+        env:
+          SERIES: ${{ matrix.series }}
+        run: python generator/make_srt.py --series "$SERIES"
+
       - name: Assemble video
         env:
           SERIES: ${{ matrix.series }}

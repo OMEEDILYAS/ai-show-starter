@@ -1,5 +1,5 @@
 # assembly/build_video.py
-import argparse, json, subprocess, sys
+import argparse, json, subprocess, sys, random
 from pathlib import Path
 
 FFMPEG = "ffmpeg"
@@ -7,29 +7,27 @@ FFPROBE = "ffprobe"
 
 def sh(cmd):
     print("+", " ".join(cmd))
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    print(proc.stdout)
-    if proc.returncode != 0:
-        raise SystemExit(f"command failed: {cmd}")
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    print(p.stdout)
+    if p.returncode != 0:
+        raise SystemExit(p.returncode)
 
 def ffprobe_duration(path: Path) -> float:
-    cmd = [
+    out = subprocess.check_output([
         FFPROBE, "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
         str(path)
-    ]
-    out = subprocess.check_output(cmd, text=True).strip()
+    ], text=True).strip()
     try:
         return float(out)
     except Exception:
         return 0.0
 
 def sanitize(txt: str, max_len: int) -> str:
-    """Escape characters that break ffmpeg drawtext and clamp length."""
     return (
         (txt or "")[:max_len]
-        .replace("\\", "\\\\")   # escape backslashes first
+        .replace("\\", "\\\\")
         .replace(":", "\\:")
         .replace("'", "\\'")
         .replace("%", "\\%")
@@ -40,7 +38,6 @@ def main():
     ap.add_argument("--series", required=True)
     args = ap.parse_args()
 
-    # locate plan and assets
     series_dir = Path("out") / args.series
     plan_path = sorted(series_dir.glob("ep_*/plan.json"))[-1]
     ep_dir = plan_path.parent
@@ -48,57 +45,115 @@ def main():
     final_dir = series_dir / "final"
     final_dir.mkdir(parents=True, exist_ok=True)
 
-    # inputs
     voice = assets / "voice.wav"
+    bg = assets / "bg.mp4"               # from gen_background.py
+    srt = assets / "subtitles.srt"       # from make_srt.py
     overlay_txt = assets / "overlay.txt"
     title_txt = assets / "title.txt"
 
     if not voice.exists():
-        raise SystemExit(f"voice track missing: {voice}")
+        raise SystemExit("Missing voice.wav")
     dur = ffprobe_duration(voice)
-    if dur < 3.0:
-        raise SystemExit(f"voice too short ({dur:.2f}s). need >= 3s")
+    if dur < 3:
+        raise SystemExit(f"voice too short ({dur:.2f}s)")
 
-    # load strings (fallbacks)
+    # Fallback: if bg missing, generate simple color source
+    bg_input = str(bg) if bg.exists() else "color=size=1080x1920:rate=30:color=black"
+
     overlay = overlay_txt.read_text(encoding="utf-8").strip() if overlay_txt.exists() else ""
     title = title_txt.read_text(encoding="utf-8").strip() if title_txt.exists() else "Daily Episode"
-
-    # sanitize for drawtext
     title_safe = sanitize(title, 64)
     overlay_safe = sanitize(overlay, 120)
 
-    # output path
+    # Optional music (put .mp3/.wav files under assets/music/)
+    music_glob = list((Path("assets") / "music").glob("*.mp3")) + list((Path("assets") / "music").glob("*.wav"))
+    music = random.choice(music_glob) if music_glob else None
+
     out_mp4 = final_dir / f"{ep_dir.name}.mp4"
 
-    # build: 9:16 1080x1920 solid bg for 'dur' seconds; draw title and overlay; mux voice
+    # Build filter_complex
     draw = (
         f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        f"text='{title_safe}':"
-        f"fontcolor=white:fontsize=64:x=(w-text_w)/2:y=120,"
+        f"text='{title_safe}':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=120,"
         f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        f"text='{overlay_safe}':"
-        f"fontcolor=white:fontsize=48:x=(w-text_w)/2:y=h-300"
+        f"text='{overlay_safe}':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=h-300"
     )
 
-    cmd = [
-        FFMPEG, "-y",
-        "-f", "lavfi", "-i", "color=size=1080x1920:rate=30:color=black",
-        "-i", str(voice),
-        "-t", f"{dur:.3f}",
-        "-filter:v", draw,
-        "-c:v", "libx264", "-profile:v", "baseline", "-level", "4.0",
-        "-pix_fmt", "yuv420p", "-preset", "veryfast", "-movflags", "+faststart",
-        "-c:a", "aac", "-b:a", "128k",
-        "-shortest",
-        str(out_mp4)
-    ]
-    sh(cmd)
+    # Inputs:
+    #  - v0: background video (or lavfi)
+    #  - a0: voice
+    #  - a1: music (optional)
+    # Audio: sidechaincompress music under voice if music exists
+    if music:
+        filter_complex = (
+            f"[0:v]format=yuv420p,scale=1080:1920,"  # ensure size
+            f"{draw}"
+            f"[vbg];"
+            f"[1:a]anull[a_voice];"
+            f"[2:a]volume=0.5,sidechaincompress=threshold=0.03:ratio=8:attack=5:release=200:makeup=1:scn=1"
+            f"[a_mduck];"
+            f"[a_voice][a_mduck]amix=inputs=2:duration=first:dropout_transition=0,volume=1.0[aout]"
+        )
+        inputs = [
+            "-i", bg_input if bg.exists() else f"lavfi:{bg_input}",
+            "-i", str(voice),
+            "-i", str(music),
+        ]
+        maps = ["-map", "[vbg]", "-map", "[aout]"]
+    else:
+        filter_complex = (
+            f"[0:v]format=yuv420p,scale=1080:1920,{draw}[vbg];"
+            f"[1:a]anull[aout]"
+        )
+        inputs = [
+            "-i", bg_input if bg.exists() else f"lavfi:{bg_input}",
+            "-i", str(voice),
+        ]
+        maps = ["-map", "[vbg]", "-map", "[aout]"]
 
-    # write a small marker to plan (optional)
+    # Subtitles (burn-in) if available
+    sub_args = []
+    if srt.exists():
+        sub_args = ["-vf", f"subtitles={srt}"]
+        # We already used -filter_complex; combine by appending in output with -filter_complex? Simpler:
+        # Do subtitles in a second lightweight pass for reliability:
+        pass
+
+    # First pass: compose video+audio without subs
+    tmp_mp4 = final_dir / f"{ep_dir.name}.nosubs.mp4"
+    cmd1 = [
+        FFMPEG, "-y",
+        *inputs,
+        "-t", f"{dur:.3f}",
+        "-filter_complex", filter_complex,
+        *maps,
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-profile:v", "baseline", "-level", "4.0",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        str(tmp_mp4)
+    ]
+    sh(cmd1)
+
+    # Second pass: burn subtitles if present
+    if srt.exists():
+        cmd2 = [
+            FFMPEG, "-y",
+            "-i", str(tmp_mp4),
+            "-vf", f"subtitles={srt}",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            str(out_mp4)
+        ]
+        sh(cmd2)
+        tmp_mp4.unlink(missing_ok=True)
+    else:
+        out_mp4 = tmp_mp4
+
+    # mark in plan
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     plan["video_path"] = str(out_mp4)
     plan_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
-
     print(f"[assembly] wrote {out_mp4} (dur≈{dur:.2f}s)")
 
 if __name__ == "__main__":
