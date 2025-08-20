@@ -17,9 +17,9 @@ def ffprobe_duration(path: Path) -> float:
     except Exception:
         return 0.0
 
-def sh(cmd):
-    print("+", " ".join(cmd))
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+def sh(args):
+    print("+", " ".join(args))
+    p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     print(p.stdout)
     if p.returncode != 0:
         sys.exit(p.returncode)
@@ -44,28 +44,18 @@ def main():
 
     bg = assets / "bg.mp4"
 
-    # Animated, loopable background: gradient + noise + blur + subtle zoom
-    # 1080x1920, 30fps
-    filter_graph = (
-        "color=black:size=1080x1920:rate=30,format=yuv420p [base];"
-        "nullsrc=size=1080x1920,geq='r(X,Y)=X+Y:g(X,Y)=Y:b(X,Y)=X',"
-        "format=yuv420p,boxblur=10:1,setsar=1,scale=1080:1920 [grad];"
-        "noise=c0s=20:c0f=t+u,format=yuv420p,boxblur=2:1,scale=1080:1920 [noise];"
-        "[grad][noise] blend=all_mode=softlight:all_opacity=0.35,zoompan="
-        "'z=1+0.02*t:x=(iw-iw/zoom)/2:y=(ih-ih/zoom)/2:d=30*%0.3f:s=1080x1920'"
-        % dur
-    )
-
+    # Simple, robust animated background:
+    #  - Start from a deep navy color (not black)
+    #  - 1080x1920 @ 30fps
+    #  - Subtle zoom over full duration
+    color = "0x101426"  # tweak if you want a different palette
     sh([
         FFMPEG, "-y",
-        "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-        "-f", "lavfi", "-i", filter_graph,
+        "-f", "lavfi",
+        "-i", f"color=c={color}:s=1080x1920:r=30",
         "-t", f"{dur:.3f}",
-        "-shortest",
-        "-map", "1:v:0",
-        "-map", "0:a:0",
+        "-vf", f"format=yuv420p,zoompan=z='1+0.01*t':d=30*{dur:.3f}:s=1080x1920",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
-        "-c:a", "aac", "-b:a", "96k",
         str(bg)
     ])
     print(f"[bg] wrote {bg} ({dur:.2f}s)")
