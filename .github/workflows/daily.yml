@@ -1,8 +1,10 @@
 name: daily-episodes
+
 on:
   schedule:
     - cron: "0 15 * * *"
   workflow_dispatch:
+
 permissions:
   contents: write
 
@@ -42,7 +44,8 @@ jobs:
 
       # ---------- PLAN & GENERATE ----------
       - name: Plan episode
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python planner/plan_next.py --series "$SERIES"
 
       - name: Director Agent
@@ -61,15 +64,18 @@ jobs:
         run: python generator/gen_assets.py --series "$SERIES"
 
       - name: Generate background (animated)
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python generator/gen_background.py --series "$SERIES"
 
       - name: Select stock clips (local library)
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python generator/select_stock.py --series "$SERIES" --max_clips 6
 
       - name: Cut visuals from stock (to narration length)
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python assembly/cut_visuals.py --series "$SERIES"
 
       - name: Make captions (Whisper if available)
@@ -79,14 +85,16 @@ jobs:
         run: python generator/make_srt.py --series "$SERIES"
 
       - name: Assemble video (prefers visuals.mp4)
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python assembly/build_video.py --series "$SERIES"
 
       - name: Validate video
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python assembly/validate_video.py --series "$SERIES"
 
-      - name: Debug: list out dir (always)
+      - name: Debug list out dir (always)
         if: always()
         run: |
           echo "Tree for series=${{ matrix.series }}:"
@@ -96,7 +104,8 @@ jobs:
       # ---------- GUARDS ----------
       - name: Guard — repo visibility
         id: vis
-        env: { GH_TOKEN: ${{ github.token }} }
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           PRIV=$(gh api repos/${{ github.repository }} --jq .private)
           if [ "$PRIV" = "true" ]; then
