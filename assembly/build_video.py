@@ -1,5 +1,5 @@
 # assembly/build_video.py
-import argparse, json, subprocess, sys, random
+import argparse, json, subprocess, sys, random, tempfile
 from pathlib import Path
 
 FFMPEG = "ffmpeg"
@@ -24,15 +24,6 @@ def ffprobe_duration(path: Path) -> float:
     except Exception:
         return 0.0
 
-def sanitize(txt: str, max_len: int) -> str:
-    return (
-        (txt or "")[:max_len]
-        .replace("\\", "\\\\")
-        .replace(":", "\\:")
-        .replace("'", "\\'")
-        .replace("%", "\\%")
-    )
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--series", required=True)
@@ -46,8 +37,8 @@ def main():
     final_dir.mkdir(parents=True, exist_ok=True)
 
     voice = assets / "voice.wav"
-    bg = assets / "bg.mp4"               # from gen_background.py
-    srt = assets / "subtitles.srt"       # from make_srt.py
+    bg = assets / "bg.mp4"                 # from gen_background.py
+    srt = assets / "subtitles.srt"         # from make_srt.py
     overlay_txt = assets / "overlay.txt"
     title_txt = assets / "title.txt"
 
@@ -57,104 +48,99 @@ def main():
     if dur < 3:
         raise SystemExit(f"voice too short ({dur:.2f}s)")
 
-    # Fallback: if bg missing, generate simple color source
-    bg_input = str(bg) if bg.exists() else "color=size=1080x1920:rate=30:color=black"
+    # Background input (file or lavfi fallback)
+    bg_input = str(bg) if bg.exists() else "lavfi:color=size=1080x1920:rate=30:color=black"
 
+    # Load texts
     overlay = overlay_txt.read_text(encoding="utf-8").strip() if overlay_txt.exists() else ""
     title = title_txt.read_text(encoding="utf-8").strip() if title_txt.exists() else "Daily Episode"
-    title_safe = sanitize(title, 64)
-    overlay_safe = sanitize(overlay, 120)
 
-    # Optional music (put .mp3/.wav files under assets/music/)
-    music_glob = list((Path("assets") / "music").glob("*.mp3")) + list((Path("assets") / "music").glob("*.wav"))
+    # Optional music
+    music_dir = Path("assets") / "music"
+    music_glob = list(music_dir.glob("*.mp3")) + list(music_dir.glob("*.wav"))
     music = random.choice(music_glob) if music_glob else None
 
-    out_mp4 = final_dir / f"{ep_dir.name}.mp4"
+    # Write drawtext via textfile to avoid escaping issues
+    # (ffmpeg will read the utf-8 files directly)
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        title_file = td / "title.txt"
+        overlay_file = td / "overlay.txt"
+        title_file.write_text(title, encoding="utf-8")
+        overlay_file.write_text(overlay, encoding="utf-8")
 
-    # Build filter_complex
-    draw = (
-        f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        f"text='{title_safe}':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=120,"
-        f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
-        f"text='{overlay_safe}':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=h-300"
-    )
-
-    # Inputs:
-    #  - v0: background video (or lavfi)
-    #  - a0: voice
-    #  - a1: music (optional)
-    # Audio: sidechaincompress music under voice if music exists
-    if music:
-        filter_complex = (
-            f"[0:v]format=yuv420p,scale=1080:1920,"  # ensure size
-            f"{draw}"
-            f"[vbg];"
-            f"[1:a]anull[a_voice];"
-            f"[2:a]volume=0.5,sidechaincompress=threshold=0.03:ratio=8:attack=5:release=200:makeup=1:scn=1"
-            f"[a_mduck];"
-            f"[a_voice][a_mduck]amix=inputs=2:duration=first:dropout_transition=0,volume=1.0[aout]"
+        # Build filter_complex:
+        #  - v: scale to 1080x1920, draw title & overlay -> [vbg]
+        #  - a: voice (and music ducking if present) -> [aout]
+        draw = (
+            f"format=yuv420p,scale=1080:1920,"
+            f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+            f"textfile='{title_file}':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=120,"
+            f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:"
+            f"textfile='{overlay_file}':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=h-300"
         )
-        inputs = [
-            "-i", bg_input if bg.exists() else f"lavfi:{bg_input}",
-            "-i", str(voice),
-            "-i", str(music),
-        ]
-        maps = ["-map", "[vbg]", "-map", "[aout]"]
-    else:
-        filter_complex = (
-            f"[0:v]format=yuv420p,scale=1080:1920,{draw}[vbg];"
-            f"[1:a]anull[aout]"
-        )
-        inputs = [
-            "-i", bg_input if bg.exists() else f"lavfi:{bg_input}",
-            "-i", str(voice),
-        ]
-        maps = ["-map", "[vbg]", "-map", "[aout]"]
 
-    # Subtitles (burn-in) if available
-    sub_args = []
-    if srt.exists():
-        sub_args = ["-vf", f"subtitles={srt}"]
-        # We already used -filter_complex; combine by appending in output with -filter_complex? Simpler:
-        # Do subtitles in a second lightweight pass for reliability:
-        pass
+        if music:
+            # Inputs: 0=bg, 1=voice, 2=music
+            filter_complex = (
+                f"[0:v]{draw}[vbg];"
+                f"[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[a_voice];"
+                f"[2:a]aresample=48000,volume=0.5,sidechaincompress=threshold=0.03:"
+                f"ratio=8:attack=5:release=200:makeup=1:scn=1[a_mduck];"
+                f"[a_voice][a_mduck]amix=inputs=2:duration=first:dropout_transition=0,volume=1.0[aout]"
+            )
+            inputs = ["-i", bg_input, "-i", str(voice), "-i", str(music)]
+        else:
+            # Inputs: 0=bg, 1=voice
+            filter_complex = (
+                f"[0:v]{draw}[vbg];"
+                f"[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[aout]"
+            )
+            inputs = ["-i", bg_input, "-i", str(voice)]
 
-    # First pass: compose video+audio without subs
-    tmp_mp4 = final_dir / f"{ep_dir.name}.nosubs.mp4"
-    cmd1 = [
-        FFMPEG, "-y",
-        *inputs,
-        "-t", f"{dur:.3f}",
-        "-filter_complex", filter_complex,
-        *maps,
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-profile:v", "baseline", "-level", "4.0",
-        "-c:a", "aac", "-b:a", "128k",
-        "-movflags", "+faststart",
-        str(tmp_mp4)
-    ]
-    sh(cmd1)
+        tmp_mp4 = final_dir / f"{ep_dir.name}.nosubs.mp4"
+        out_mp4 = final_dir / f"{ep_dir.name}.mp4"
 
-    # Second pass: burn subtitles if present
-    if srt.exists():
-        cmd2 = [
+        # 1) Compose picture+audio (no subs yet)
+        cmd1 = [
             FFMPEG, "-y",
-            "-i", str(tmp_mp4),
-            "-vf", f"subtitles={srt}",
+            *inputs,
+            "-t", f"{dur:.3f}",
+            "-filter_complex", filter_complex,
+            "-map", "[vbg]", "-map", "[aout]",
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
-            "-c:a", "copy",
+            "-profile:v", "baseline", "-level", "4.0",
+            "-c:a", "aac", "-b:a", "128k",
             "-movflags", "+faststart",
-            str(out_mp4)
+            str(tmp_mp4)
         ]
-        sh(cmd2)
-        tmp_mp4.unlink(missing_ok=True)
-    else:
-        out_mp4 = tmp_mp4
+        sh(cmd1)
 
-    # mark in plan
-    plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    plan["video_path"] = str(out_mp4)
-    plan_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
-    print(f"[assembly] wrote {out_mp4} (dur≈{dur:.2f}s)")
+        # 2) Burn subtitles if present (second pass keeps it simple)
+        if srt.exists():
+            cmd2 = [
+                FFMPEG, "-y",
+                "-i", str(tmp_mp4),
+                "-vf", f"subtitles={srt}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
+                "-c:a", "copy",
+                "-movflags", "+faststart",
+                str(out_mp4)
+            ]
+            sh(cmd2)
+            try:
+                tmp_mp4.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            out_mp4 = tmp_mp4
+
+        # save path in plan
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        plan["video_path"] = str(out_mp4)
+        plan_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+
+        print(f"[assembly] wrote {out_mp4} (dur≈{dur:.2f}s)")
 
 if __name__ == "__main__":
     main()
