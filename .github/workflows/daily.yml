@@ -47,6 +47,12 @@ jobs:
         env:
           SERIES: ${{ matrix.series }}
         run: python planner/plan_next.py --series "$SERIES"
+      
+      - name: Stage curriculum unit (placeholder-friendly)
+        env:
+          SERIES: ${{ matrix.series }}
+        run: python curriculum/extract_unit.py --series "$SERIES"
+
 
       - name: Director Agent
         env:
