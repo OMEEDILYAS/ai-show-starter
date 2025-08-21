@@ -130,20 +130,29 @@ jobs:
 
       - name: Publish MP4 to gh-pages
         id: publish_url
-        if: ${{ steps.mp4.outputs.found == 'true' && steps.vis.outputs.skip != 'true' && !cancelled() }}
+        if: ${{ steps.mp4.outputs.found == 'true' && !cancelled() }}
         run: |
           set -e
           FILE="${{ steps.mp4.outputs.file }}"
           NAME=$(basename "$FILE")
+
           mkdir -p site/reels/${{ matrix.series }}
           cp "$FILE" "site/reels/${{ matrix.series }}/$NAME"
+
           cd site
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # make sure we're up to date before pushing
+          git fetch origin gh-pages
+          git pull --rebase origin gh-pages || true
+
           git add "reels/${{ matrix.series }}/$NAME"
-          git commit -m "reel: $NAME (${{ matrix.series }}) from run ${{ github.run_id }}" || true
-          git push
+          git commit -m "reel: $NAME (${{ matrix.series }}) from run ${{ github.run_id }}" || echo "nothing to commit"
+          git push origin HEAD:gh-pages
+
           echo "url=https://omeedilyas.github.io/ai-show-starter/reels/${{ matrix.series }}/$NAME" >> "$GITHUB_OUTPUT"
+
 
       - name: Post to Instagram (ai_teacher only) — REAL
         if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.vis.outputs.skip != 'true' && steps.quota.outputs.allow == 'true' && !cancelled() }}
