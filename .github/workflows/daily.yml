@@ -155,6 +155,18 @@ jobs:
           echo "url=https://omeedilyas.github.io/ai-show-starter/reels/${{ matrix.series }}/$NAME" >> "$GITHUB_OUTPUT"
 
 
+      - name: IG diag
+        if: ${{ matrix.series == 'ai_teacher' && steps.publish_url.outputs.url != '' }}
+        run: |
+          echo "IG_USER_ID len: ${#IG_USER_ID}"
+          echo "IG_ACCESS_TOKEN len: ${#IG_ACCESS_TOKEN}"
+          curl -I "${{ steps.publish_url.outputs.url }}"
+        env:
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+
+
+
 
       - name: Echo reel URL (ai_teacher)
         if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
