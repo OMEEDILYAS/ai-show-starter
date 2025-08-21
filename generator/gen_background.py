@@ -44,17 +44,16 @@ def main():
 
     bg = assets / "bg.mp4"
 
-    # Simple, robust animated background:
-    #  - Start from a deep navy color (not black)
-    #  - 1080x1920 @ 30fps
-    #  - Subtle zoom over full duration
-    color = "0x101426"  # tweak if you want a different palette
+    # Abstract animated background:
+    # testsrc2 -> strong blur -> slight saturation boost -> yuv420p
+    # 1080x1920 @ 30fps, duration matches narration
+    filter_chain = "boxblur=20:1,eq=saturation=1.25,format=yuv420p"
     sh([
         FFMPEG, "-y",
         "-f", "lavfi",
-        "-i", f"color=c={color}:s=1080x1920:r=30",
+        "-i", f"testsrc2=size=1080x1920:rate=30",
         "-t", f"{dur:.3f}",
-        "-vf", f"format=yuv420p,zoompan=z='1+0.01*t':d=30*{dur:.3f}:s=1080x1920",
+        "-vf", filter_chain,
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
         str(bg)
     ])
