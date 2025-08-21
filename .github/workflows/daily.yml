@@ -1,7 +1,7 @@
 name: daily-episodes
 on:
   schedule:
-    - cron: "0 15 * * *"   # daily at 15:00 UTC (~10:00 AM CT during DST)
+    - cron: "0 15 * * *"
   workflow_dispatch:
 permissions:
   contents: write
@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        series: [ai_teacher, ai_drama, ai_memes]  # add up to 6
+        series: [ai_teacher, ai_drama, ai_memes]
     concurrency:
       group: daily-${{ matrix.series }}
       cancel-in-progress: false
@@ -35,15 +35,14 @@ jobs:
       - name: Install deps
         run: pip install -r infra/requirements.txt
 
-      - name: Install FFmpeg (ffmpeg + ffprobe) & fonts
+      - name: Install FFmpeg & fonts
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
 
       # ---------- PLAN & GENERATE ----------
       - name: Plan episode
-        env:
-          SERIES: ${{ matrix.series }}
+        env: { SERIES: ${{ matrix.series }} }
         run: python planner/plan_next.py --series "$SERIES"
 
       - name: Director Agent
@@ -58,30 +57,36 @@ jobs:
           SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_TTS_MODEL: gpt-4o-mini-tts
-          OPENAI_TTS_VOICE: verse   # change per account if you want
+          OPENAI_TTS_VOICE: verse
         run: python generator/gen_assets.py --series "$SERIES"
 
       - name: Generate background (animated)
-        env:
-          SERIES: ${{ matrix.series }}
+        env: { SERIES: ${{ matrix.series }} }
         run: python generator/gen_background.py --series "$SERIES"
 
-      - name: Make captions (SRT)
+      - name: Select stock clips (local library)
+        env: { SERIES: ${{ matrix.series }} }
+        run: python generator/select_stock.py --series "$SERIES" --max_clips 6
+
+      - name: Cut visuals from stock (to narration length)
+        env: { SERIES: ${{ matrix.series }} }
+        run: python assembly/cut_visuals.py --series "$SERIES"
+
+      - name: Make captions (Whisper if available)
         env:
           SERIES: ${{ matrix.series }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python generator/make_srt.py --series "$SERIES"
 
-      - name: Assemble video
-        env:
-          SERIES: ${{ matrix.series }}
+      - name: Assemble video (prefers visuals.mp4)
+        env: { SERIES: ${{ matrix.series }} }
         run: python assembly/build_video.py --series "$SERIES"
 
       - name: Validate video
-        env:
-          SERIES: ${{ matrix.series }}
+        env: { SERIES: ${{ matrix.series }} }
         run: python assembly/validate_video.py --series "$SERIES"
 
-      - name: Debug list out dir (always)
+      - name: Debug: list out dir (always)
         if: always()
         run: |
           echo "Tree for series=${{ matrix.series }}:"
@@ -91,14 +96,11 @@ jobs:
       # ---------- GUARDS ----------
       - name: Guard — repo visibility
         id: vis
-        env:
-          GH_TOKEN: ${{ github.token }}
+        env: { GH_TOKEN: ${{ github.token }} }
         run: |
           PRIV=$(gh api repos/${{ github.repository }} --jq .private)
-          echo "private=$PRIV"
           if [ "$PRIV" = "true" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Repo is private; skipping hosting/posting."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
@@ -111,25 +113,21 @@ jobs:
         run: |
           python - <<'PY'
           import os, requests, json
-          token = os.environ.get("IG_ACCESS_TOKEN")
-          igid  = os.environ.get("IG_USER_ID")
-          allow = False
-          remaining = 0
+          token = os.environ.get("IG_ACCESS_TOKEN"); igid  = os.environ.get("IG_USER_ID")
+          allow=False; remaining=0
           if token and igid:
-            url = f"https://graph.facebook.com/v19.0/{igid}/content_publishing_limit"
-            r = requests.get(url, params={"fields": "quota_usage,config", "access_token": token}, timeout=30)
+            r = requests.get(f"https://graph.facebook.com/v19.0/{igid}/content_publishing_limit",
+                             params={"fields":"quota_usage,config","access_token":token}, timeout=30)
             data = r.json()
             try:
               row = (data.get("data") or [{}])[0]
               usage = int(row.get("quota_usage", 0))
               cfg = (row.get("config") or [{}])[0]
               total = int(cfg.get("quota_total", 100))
-              remaining = max(total - usage, 0)
-              allow = remaining > 0
+              remaining = max(total-usage, 0); allow = remaining>0
               print(f"[guard] IG quota used={usage}/{total} remaining={remaining}")
-            except Exception:
-              print("[guard] unexpected:", json.dumps(data))
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+            except Exception: print("[guard] unexpected:", json.dumps(data))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             f.write(f"allow={'true' if allow else 'false'}\n")
             f.write(f"remaining={remaining}\n")
           PY
@@ -143,16 +141,13 @@ jobs:
           shopt -s nullglob
           files=(out/${{ matrix.series }}/final/*.mp4)
           if [ ${#files[@]} -eq 0 ]; then
-            echo "No MP4 found for series ${{ matrix.series }}"
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "found=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
           latest=$(ls -t out/${{ matrix.series }}/final/*.mp4 | head -n 1)
-          echo "Using: $latest"
           echo "found=true" >> "$GITHUB_OUTPUT"
           echo "file=$latest" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout gh-pages (separate workdir)
+      - name: Checkout gh-pages
         if: ${{ steps.mp4.outputs.found == 'true' && steps.vis.outputs.skip != 'true' && !cancelled() }}
         uses: actions/checkout@v4
         with:
@@ -168,14 +163,12 @@ jobs:
           NAME=$(basename "$FILE")
           mkdir -p site/reels/${{ matrix.series }}
           cp "$FILE" "site/reels/${{ matrix.series }}/$NAME"
-
           cd site
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "reels/${{ matrix.series }}/$NAME"
           git commit -m "reel: $NAME (${{ matrix.series }}) from run ${{ github.run_id }}" || true
           git push
-
           echo "url=https://omeedilyas.github.io/ai-show-starter/reels/${{ matrix.series }}/$NAME" >> "$GITHUB_OUTPUT"
 
       - name: Post to Instagram (ai_teacher only) — REAL
@@ -184,7 +177,6 @@ jobs:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: |
-          echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
           python publisher/post_instagram.py "${{ steps.publish_url.outputs.url }}" "Daily episode 🚀 #ai #reels #${{ matrix.series }}"
       # ---------- /PUBLISH ----------
 
