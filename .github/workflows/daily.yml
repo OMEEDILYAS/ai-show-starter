@@ -107,47 +107,6 @@ jobs:
           find out/${{ matrix.series }} -maxdepth 3 -type f -print || true
       # ---------- /PLAN & GENERATE ----------
 
-      # ---------- GUARDS ----------
-      - name: Guard — repo visibility
-        id: vis
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PRIV=$(gh api repos/${{ github.repository }} --jq .private)
-          if [ "$PRIV" = "true" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Guard — IG quota (24h)
-        id: quota
-        env:
-          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
-          IG_USER_ID: ${{ secrets.IG_USER_ID }}
-        run: |
-          python - <<'PY'
-          import os, requests, json
-          token = os.environ.get("IG_ACCESS_TOKEN"); igid  = os.environ.get("IG_USER_ID")
-          allow=False; remaining=0
-          if token and igid:
-            r = requests.get(f"https://graph.facebook.com/v19.0/{igid}/content_publishing_limit",
-                             params={"fields":"quota_usage,config","access_token":token}, timeout=30)
-            data = r.json()
-            try:
-              row = (data.get("data") or [{}])[0]
-              usage = int(row.get("quota_usage", 0))
-              cfg = (row.get("config") or [{}])[0]
-              total = int(cfg.get("quota_total", 100))
-              remaining = max(total-usage, 0); allow = remaining>0
-              print(f"[guard] IG quota used={usage}/{total} remaining={remaining}")
-            except Exception: print("[guard] unexpected:", json.dumps(data))
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            f.write(f"allow={'true' if allow else 'false'}\n")
-            f.write(f"remaining={remaining}\n")
-          PY
-      # ---------- /GUARDS ----------
-
       # ---------- PUBLISH (robust) ----------
       - name: Find latest MP4
         id: mp4
