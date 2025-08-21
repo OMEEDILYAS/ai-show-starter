@@ -158,7 +158,8 @@ jobs:
 
       - name: Echo reel URL (ai_teacher)
         if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
-        run: echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
+        run: |
+          echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
 
       - name: Post to Instagram (ai_teacher) — REAL
         if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
