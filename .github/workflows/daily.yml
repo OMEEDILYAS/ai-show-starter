@@ -156,14 +156,19 @@ jobs:
 
 
 
-      - name: Post to Instagram (ai_teacher only) — REAL
+      - name: Echo reel URL (ai_teacher)
+        if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
+        run: echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
+
+      - name: Post to Instagram (ai_teacher) — REAL
         if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: |
-          echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
-          python publisher/post_instagram.py "${{ steps.publish_url.outputs.url }}" "Daily episode #ai #reels #${{ matrix.series }}"
+          set -euo pipefail
+          python -u publisher/post_instagram.py "${{ steps.publish_url.outputs.url }}" "Daily episode 🚀 #ai #reels #${{ matrix.series }}" | tee ig_post.log
+          echo "[ok] post_instagram.py finished"
 
 
       - name: Publish (DRY RUN aggregate)
