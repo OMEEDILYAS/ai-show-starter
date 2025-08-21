@@ -136,16 +136,17 @@ jobs:
           FILE="${{ steps.mp4.outputs.file }}"
           NAME=$(basename "$FILE")
 
-          mkdir -p site/reels/${{ matrix.series }}
-          cp "$FILE" "site/reels/${{ matrix.series }}/$NAME"
-
           cd site
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # make sure we're up to date before pushing
+          # make sure we're up to date BEFORE writing files
           git fetch origin gh-pages
-          git pull --rebase origin gh-pages || true
+          git checkout gh-pages
+          git pull --rebase origin gh-pages
+
+          mkdir -p reels/${{ matrix.series }}
+          cp "../$FILE" "reels/${{ matrix.series }}/$NAME"
 
           git add "reels/${{ matrix.series }}/$NAME"
           git commit -m "reel: $NAME (${{ matrix.series }}) from run ${{ github.run_id }}" || echo "nothing to commit"
@@ -154,14 +155,16 @@ jobs:
           echo "url=https://omeedilyas.github.io/ai-show-starter/reels/${{ matrix.series }}/$NAME" >> "$GITHUB_OUTPUT"
 
 
+
       - name: Post to Instagram (ai_teacher only) — REAL
-        if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.vis.outputs.skip != 'true' && steps.quota.outputs.allow == 'true' && !cancelled() }}
+        if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: |
-          python publisher/post_instagram.py "${{ steps.publish_url.outputs.url }}" "Daily episode 🚀 #ai #reels #${{ matrix.series }}"
-      # ---------- /PUBLISH ----------
+          echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
+          python publisher/post_instagram.py "${{ steps.publish_url.outputs.url }}" "Daily episode #ai #reels #${{ matrix.series }}"
+
 
       - name: Publish (DRY RUN aggregate)
         if: ${{ !cancelled() }}
