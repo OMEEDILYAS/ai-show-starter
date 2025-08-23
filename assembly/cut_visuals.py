@@ -1,117 +1,115 @@
 # assembly/cut_visuals.py
-import argparse, json, os, subprocess
+import argparse, os, sys, subprocess, shutil
 from pathlib import Path
 
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
 
-def ffprobe_duration(path: Path) -> float:
-    out = subprocess.check_output(
-        [FFPROBE, "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=nk=1:nw=1", str(path)], text=True
-    ).strip()
-    try: return float(out)
-    except: return 0.0
-
-def sh(cmd):
-    print("+", " ".join(cmd))
-    subprocess.check_call(cmd)
+def dur(path: Path) -> float:
+    try:
+        out = subprocess.check_output(
+            [FFPROBE, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            text=True
+        ).strip()
+        return float(out)
+    except Exception:
+        return 0.0
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--series", required=True)
+    ap.add_argument("--min_total", type=float, default=40.0)  # seconds, target minimum
+    ap.add_argument("--max_inputs", type=int, default=12)
     args = ap.parse_args()
 
-    series_dir = Path("out") / args.series
-    plan_path = sorted(series_dir.glob("ep_*/plan.json"))[-1]
-    ep_dir = plan_path.parent
+    ep_dir = sorted((Path("out")/args.series).glob("ep_*"))[-1]
     assets = ep_dir / "assets"
-    final_dir = series_dir / "final"
-    final_dir.mkdir(parents=True, exist_ok=True)
-
+    assets.mkdir(parents=True, exist_ok=True)
     voice = assets / "voice.wav"
-    target = ffprobe_duration(voice) if voice.exists() else 50.0
+    target = max(dur(voice), args.min_total) if voice.exists() else args.min_total
 
-    stock_list = assets / "stock_list.txt"
-    if not stock_list.exists():
-        print("[cut] no stock_list.txt; skipping visuals")
-        return
-    with stock_list.open() as f:
-        clips = [Path(x.strip()) for x in f if x.strip()]
-
-    if not clips:
-        print("[cut] empty list; skipping visuals")
-        return
-
-    # Convert each to vertical 1080x1920 with gentle zoom (if not already)
-    work = assets / "work"
-    work.mkdir(exist_ok=True)
-    prepared = []
-    for i, src in enumerate(clips, start=1):
-        out = work / f"prep_{i:02d}.mp4"
-        vf = (
-            "scale=w=1080:h=-2:force_original_aspect_ratio=decrease,"
-            "pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black,"
-            "zoompan=z='1+0.02*t':d=30*5:s=1080x1920"
-        )
-        cmd = [FFMPEG, "-y", "-i", str(src),
-               "-vf", vf, "-r", "30",
-               "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
-               str(out)]
-        try:
-            sh(cmd)
-            prepared.append(out)
-        except subprocess.CalledProcessError:
-            print("[cut] failed on", src)
-
-    if not prepared:
-        print("[cut] no prepared clips; skipping visuals")
-        return
-
-    # Decide per-clip length to reach target with crossfades (~0.4s)
-    n = len(prepared)
-    if n == 1:
-        per = target
+    # Candidate clips: prefer list file if present; otherwise glob pexels/*.mp4 in assets
+    list_file = assets / "stock_list.txt"
+    clips = []
+    if list_file.exists():
+        for line in list_file.read_text(encoding="utf-8").splitlines():
+            p = Path(line.strip())
+            if p.suffix.lower() == ".mp4" and p.exists():
+                clips.append(p)
     else:
-        per = max(3.0, (target + 0.4*(n-1)) / n)
+        for p in sorted(assets.glob("*.mp4")):
+            if p.name.lower() == "bg.mp4":
+                continue
+            if "pexels" in p.name.lower():
+                clips.append(p)
 
-    # Trim each and build a concat script
-    trimmed = []
-    for i, src in enumerate(prepared, start=1):
-        out = work / f"trim_{i:02d}.mp4"
-        cmd = [FFMPEG, "-y", "-i", str(src),
-               "-t", f"{per:.3f}", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-               "-preset", "veryfast", str(out)]
-        sh(cmd)
-        trimmed.append(out)
+    # Fallback: if nothing found, do nothing (keep bg)
+    if not clips:
+        print("[cut_visuals] no stock clips found; skipping (bg.mp4 will be used).")
+        return
 
-    # Crossfade chain
-    # v0 xf v1 -> v01 ; v01 xf v2 -> v02 ; ...
-    cur = trimmed[0]
-    for i in range(1, len(trimmed)):
-        nxt = trimmed[i]
-        out = work / f"xf_{i:02d}.mp4"
-        # 0.4s crossfade starting at end-0.4 of first
-        filter_complex = (
-            "[0:v][1:v]xfade=transition=fade:duration=0.4:offset=PTS-STARTPTS+"
-            f"{max(0.0, per-0.4):.3f}"
-        )
-        cmd = [FFMPEG, "-y",
-               "-i", str(cur), "-i", str(nxt),
-               "-filter_complex", filter_complex,
-               "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
-               str(out)]
-        sh(cmd)
-        cur = out
+    # Build a list that is long enough; just cycle until total duration >= target
+    lengths = [dur(c) for c in clips]
+    pairs = [(c, d) for c, d in zip(clips, lengths) if d > 0.4]  # ignore tiny/invalid
+    if not pairs:
+        print("[cut_visuals] all stock clips invalid; skipping.")
+        return
 
-    # Output visuals.mp4
+    seq = []
+    total = 0.0
+    i = 0
+    while total < target and len(seq) < args.max_inputs:
+        c, d = pairs[i % len(pairs)]
+        seq.append(c)
+        total += d
+        i += 1
+
+    # ffmpeg concat via filter_complex; normalize each to 1080x1920 (9:16), 30fps
     visuals = assets / "visuals.mp4"
-    cmd = [FFMPEG, "-y", "-i", str(cur),
-           "-t", f"{target:.3f}", "-an",
-           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
-           str(visuals)]
-    sh(cmd)
-    print("[cut] wrote", visuals)
+
+    # Inputs
+    cmd = [FFMPEG, "-y"]
+    for c in seq:
+        cmd += ["-i", str(c)]
+
+    # Per-input normalization chains -> [v0],[v1],...
+    vlabels = []
+    fc_parts = []
+    for idx in range(len(seq)):
+        in_label = f"[{idx}:v]"
+        out_label = f"[v{idx}]"
+        vlabels.append(out_label)
+        fc_parts.append(
+            f"{in_label}"
+            "scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,setsar=1,fps=30"
+            f"{out_label}"
+        )
+
+    # Concat them (video only)
+    n = len(seq)
+    fc_parts.append(f"{''.join(vlabels)}concat=n={n}:v=1:a=0,format=yuv420p[v]")
+    fc = ";".join(fc_parts)
+
+    cmd += [
+        "-filter_complex", fc,
+        "-map", "[v]",
+        "-t", f"{target:.3f}",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-preset", "veryfast",
+        str(visuals)
+    ]
+
+    print("+", " ".join(cmd))
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    print(proc.stdout)
+    if proc.returncode != 0 or not visuals.exists():
+        print("[cut_visuals] ffmpeg failed; leaving bg.mp4 fallback.", file=sys.stderr)
+        sys.exit(0)
+
+    print(f"[cut_visuals] wrote {visuals} (target≈{target:.1f}s)")
 
 if __name__ == "__main__":
     main()
