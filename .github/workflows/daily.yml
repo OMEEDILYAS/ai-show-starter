@@ -158,24 +158,31 @@ jobs:
         id: mp4
         run: |
           python - <<'PY'
-          import json, glob, sys
+          import json, sys
           from pathlib import Path
+
           series = "${{ matrix.series }}"
           plans = sorted(Path("out", series).glob("ep_*/plan.json"))
           if not plans:
-            print("found=false"); sys.exit(0)
+              print("found=false")
+              sys.exit(0)
+
           p = plans[-1]
           plan = json.loads(p.read_text(encoding="utf-8"))
           vid = plan.get("video_path")
+
           if vid and Path(vid).exists():
-            print("found=true"); print(f"file={vid}")
+              print("found=true")
+              print(f"file={vid}")
           else:
-            files = sorted(Path("out", series, "final").glob("*.mp4"))
-            if files:
-              print("found=true"); print(f"file={files[-1]}")
-            else:
-              print("found=false")
-          PY >> "$GITHUB_OUTPUT"
+              files = sorted(Path("out", series, "final").glob("*.mp4"))
+              if files:
+                  print("found=true")
+                  print(f"file={files[-1]}")
+              else:
+                  print("found=false")
+          PY
+
 
       - name: Publish MP4 to gh-pages
         id: publish_url
