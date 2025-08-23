@@ -1,34 +1,21 @@
 # assembly/cut_visuals.py
-import argparse, subprocess, sys, tempfile
+import argparse, json, os, subprocess
 from pathlib import Path
 
 FFMPEG = "ffmpeg"
 FFPROBE = "ffprobe"
 
-def sh(cmd):
-    print("+", " ".join(cmd))
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    print(p.stdout)
-    if p.returncode != 0:
-        sys.exit(p.returncode)
-
 def ffprobe_duration(path: Path) -> float:
-    out = subprocess.check_output([
-        FFPROBE, "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        str(path)
-    ], text=True).strip()
+    out = subprocess.check_output(
+        [FFPROBE, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nk=1:nw=1", str(path)], text=True
+    ).strip()
     try: return float(out)
     except: return 0.0
 
-def normalize_clip(src: Path, dst: Path):
-    # Center-crop to 9:16 with smart scale, mute audio, 30fps, yuv420p
-    vf = (
-        "scale='if(gt(a,9/16),-2,1080)':'if(gt(a,9/16),1920,-2)',"
-        "crop=1080:1920,format=yuv420p,fps=30"
-    )
-    sh([FFMPEG, "-y", "-i", str(src), "-vf", vf, "-an", "-c:v", "libx264", "-preset", "veryfast", str(dst)])
+def sh(cmd):
+    print("+", " ".join(cmd))
+    subprocess.check_call(cmd)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -39,59 +26,92 @@ def main():
     plan_path = sorted(series_dir.glob("ep_*/plan.json"))[-1]
     ep_dir = plan_path.parent
     assets = ep_dir / "assets"
+    final_dir = series_dir / "final"
+    final_dir.mkdir(parents=True, exist_ok=True)
+
     voice = assets / "voice.wav"
-    sel_dir = assets / "stock_sel"
-    out_visuals = assets / "visuals.mp4"
+    target = ffprobe_duration(voice) if voice.exists() else 50.0
 
-    if not sel_dir.exists():
-        print("[cut] no stock_sel directory; skipping")
+    stock_list = assets / "stock_list.txt"
+    if not stock_list.exists():
+        print("[cut] no stock_list.txt; skipping visuals")
         return
-    clips = sorted(sel_dir.glob("clip_*.mp4"))
+    with stock_list.open() as f:
+        clips = [Path(x.strip()) for x in f if x.strip()]
+
     if not clips:
-        print("[cut] no selected stock clips; skipping")
+        print("[cut] empty list; skipping visuals")
         return
-    if not voice.exists():
-        raise SystemExit("voice.wav missing")
-    target = ffprobe_duration(voice)
-    if target < 3:
-        raise SystemExit(f"voice too short ({target:.2f}s)")
 
-    with tempfile.TemporaryDirectory() as td:
-        td = Path(td)
-        norm = []
-        # normalize all to consistent codec/size
-        for i, src in enumerate(clips):
-            dst = td / f"n_{i:02d}.mp4"
-            normalize_clip(src, dst)
-            norm.append(dst)
+    # Convert each to vertical 1080x1920 with gentle zoom (if not already)
+    work = assets / "work"
+    work.mkdir(exist_ok=True)
+    prepared = []
+    for i, src in enumerate(clips, start=1):
+        out = work / f"prep_{i:02d}.mp4"
+        vf = (
+            "scale=w=1080:h=-2:force_original_aspect_ratio=decrease,"
+            "pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black,"
+            "zoompan=z='1+0.02*t':d=30*5:s=1080x1920"
+        )
+        cmd = [FFMPEG, "-y", "-i", str(src),
+               "-vf", vf, "-r", "30",
+               "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
+               str(out)]
+        try:
+            sh(cmd)
+            prepared.append(out)
+        except subprocess.CalledProcessError:
+            print("[cut] failed on", src)
 
-        # loop normalized clips until we exceed target a bit
-        seq = []
-        total = 0.0
-        i = 0
-        while total < target + 2 and norm:
-            p = norm[i % len(norm)]
-            d = ffprobe_duration(p)
-            if d <= 0.1:
-                i += 1; continue
-            seq.append((p, d))
-            total += d
-            i += 1
+    if not prepared:
+        print("[cut] no prepared clips; skipping visuals")
+        return
 
-        # write concat list
-        concat_txt = td / "concat.txt"
-        with concat_txt.open("w", encoding="utf-8") as f:
-            for p, _ in seq:
-                f.write(f"file '{p}'\n")
+    # Decide per-clip length to reach target with crossfades (~0.4s)
+    n = len(prepared)
+    if n == 1:
+        per = target
+    else:
+        per = max(3.0, (target + 0.4*(n-1)) / n)
 
-        # concat (stream copy) then trim to target and re-mux faststart
-        concat_out = td / "concat.mp4"
-        sh([FFMPEG, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_txt), "-c", "copy", str(concat_out)])
-        sh([FFMPEG, "-y", "-i", str(concat_out), "-t", f"{target:.3f}",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
-            "-an", "-movflags", "+faststart", str(out_visuals)])
+    # Trim each and build a concat script
+    trimmed = []
+    for i, src in enumerate(prepared, start=1):
+        out = work / f"trim_{i:02d}.mp4"
+        cmd = [FFMPEG, "-y", "-i", str(src),
+               "-t", f"{per:.3f}", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               "-preset", "veryfast", str(out)]
+        sh(cmd)
+        trimmed.append(out)
 
-    print(f"[cut] wrote {out_visuals} (≈{target:.2f}s)")
+    # Crossfade chain
+    # v0 xf v1 -> v01 ; v01 xf v2 -> v02 ; ...
+    cur = trimmed[0]
+    for i in range(1, len(trimmed)):
+        nxt = trimmed[i]
+        out = work / f"xf_{i:02d}.mp4"
+        # 0.4s crossfade starting at end-0.4 of first
+        filter_complex = (
+            "[0:v][1:v]xfade=transition=fade:duration=0.4:offset=PTS-STARTPTS+"
+            f"{max(0.0, per-0.4):.3f}"
+        )
+        cmd = [FFMPEG, "-y",
+               "-i", str(cur), "-i", str(nxt),
+               "-filter_complex", filter_complex,
+               "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
+               str(out)]
+        sh(cmd)
+        cur = out
+
+    # Output visuals.mp4
+    visuals = assets / "visuals.mp4"
+    cmd = [FFMPEG, "-y", "-i", str(cur),
+           "-t", f"{target:.3f}", "-an",
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
+           str(visuals)]
+    sh(cmd)
+    print("[cut] wrote", visuals)
 
 if __name__ == "__main__":
     main()
