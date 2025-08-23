@@ -130,6 +130,10 @@ jobs:
         env:
           SERIES: ${{ matrix.series }}
         run: python assembly/cut_visuals.py --series "$SERIES"
+      
+      - name: Debug visuals existence
+        run: |
+          ls -l out/${{ matrix.series }}/ep_*/assets/visuals.mp4 || echo "no visuals.mp4"
 
       - name: Make captions (SRT)
         env:
@@ -158,31 +162,40 @@ jobs:
         id: mp4
         run: |
           python - <<'PY'
-          import json, sys
+          import json, os
           from pathlib import Path
 
           series = "${{ matrix.series }}"
-          plans = sorted(Path("out", series).glob("ep_*/plan.json"))
-          if not plans:
-              print("found=false")
-              sys.exit(0)
+          outdir = Path("out") / series
 
-          p = plans[-1]
-          plan = json.loads(p.read_text(encoding="utf-8"))
-          vid = plan.get("video_path")
+          found = False
+          path = ""
 
-          if vid and Path(vid).exists():
-              print("found=true")
-              print(f"file={vid}")
-          else:
-              files = sorted(Path("out", series, "final").glob("*.mp4"))
-              if files:
-                  print("found=true")
-                  print(f"file={files[-1]}")
-              else:
-                  print("found=false")
+          plans = sorted(outdir.glob("ep_*/plan.json"))
+          if plans:
+            plan = json.loads(plans[-1].read_text(encoding="utf-8"))
+            vid = plan.get("video_path", "")
+            if vid and Path(vid).exists():
+              found = True
+              path = vid
+
+          if not found:
+            finals = sorted((outdir / "final").glob("*.mp4"))
+            if finals:
+              found = True
+              path = str(finals[-1])
+
+          # set real step outputs
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write(f"found={'true' if found else 'false'}\n")
+            if found:
+              f.write(f"file={path}\n")
+
+          # also echo for logs
+          print(f"found={'true' if found else 'false'}")
+          if found:
+            print(f"file={path}")
           PY
-
 
       - name: Publish MP4 to gh-pages
         id: publish_url
