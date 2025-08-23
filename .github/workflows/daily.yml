@@ -131,6 +131,7 @@ jobs:
       - name: Route shots via adapters → visuals.mp4
         env:
           SERIES: ${{ matrix.series }}
+          PYTHONPATH: ${{ github.workspace }}
         run: python generator/route_shots.py --series "$SERIES"
 
 

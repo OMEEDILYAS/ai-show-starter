@@ -1,6 +1,12 @@
 # generator/route_shots.py
-import argparse, json, os, subprocess, shlex, tempfile
+import argparse, json, os, subprocess, shlex, tempfile, sys
 from pathlib import Path
+
+# --- add these two lines right after imports ---
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+# ----------------------------------------------
 
 from adapters.slide_cards import make_slide
 from adapters.diagram_basic import make_diagram
