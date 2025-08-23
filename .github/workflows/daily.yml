@@ -121,6 +121,19 @@ jobs:
           SERIES: ${{ matrix.series }}
         run: python generator/gen_background.py --series "$SERIES"
 
+      - name: Shot list from narration
+        env:
+          SERIES: ${{ matrix.series }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-4o
+        run: python planner/make_shotlist.py --series "$SERIES"
+
+      - name: Route shots via adapters → visuals.mp4
+        env:
+          SERIES: ${{ matrix.series }}
+        run: python generator/route_shots.py --series "$SERIES"
+
+
       - name: Select stock clips (from library)
         env:
           SERIES: ${{ matrix.series }}
