@@ -199,25 +199,28 @@ jobs:
 
       - name: Publish MP4 to gh-pages
         id: publish_url
-        if: ${{ steps.mp4.outputs.found == 'true' && !cancelled() }}
+        if: ${{ steps.mp4.outputs.found == 'true' && steps.vis.outputs.skip != 'true' && !cancelled() }}
         run: |
           set -e
           FILE="${{ steps.mp4.outputs.file }}"
-          NAME=$(basename "$FILE")
+          # Make a unique, cache-busting name per run (series-runId.mp4)
+          NAME="${{ matrix.series }}-${{ github.run_id }}.mp4"
+
+          mkdir -p site/reels/${{ matrix.series }}
+          cp "$FILE" "site/reels/${{ matrix.series }}/$NAME"
 
           cd site
-          git fetch origin gh-pages
-          git checkout gh-pages
-          git pull --rebase origin gh-pages
-
-          mkdir -p reels/${{ matrix.series }}
-          cp "../$FILE" "reels/${{ matrix.series }}/$NAME"
-
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "reels/${{ matrix.series }}/$NAME"
-          git commit -m "reel: $NAME (${{ matrix.series }}) from run ${{ github.run_id }}" || echo "nothing to commit"
-          git push origin HEAD:gh-pages
+          git commit -m "reel: $NAME (${{ matrix.series }}) from run ${{ github.run_id }}" || true
+
+          # Avoid non-fast-forward errors if multiple jobs push gh-pages:
+          git pull --rebase origin gh-pages || true
+          git push
 
           echo "url=https://omeedilyas.github.io/ai-show-starter/reels/${{ matrix.series }}/$NAME" >> "$GITHUB_OUTPUT"
+
 
       # ---- Real Instagram only for ai_teacher (keep others dry) ----
       - name: Echo reel URL (ai_teacher)
