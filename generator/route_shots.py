@@ -16,23 +16,26 @@ FFMPEG = "ffmpeg"
 
 def concat_videos(paths, out_path: Path):
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # use concat demuxer
+    # write ABSOLUTE paths so ffmpeg ignores the temp file's directory
+    abs_paths = [str(Path(p).resolve()) for p in paths]
+
     with tempfile.NamedTemporaryFile("w", delete=False, suffix=".txt") as f:
-        for p in paths:
-            f.write(f"file '{Path(p).as_posix()}'\n")
+        for p in abs_paths:
+            f.write(f"file {shlex.quote(p)}\n")
         list_file = f.name
-    cmd = f"{FFMPEG} -y -f concat -safe 0 -i {shlex.quote(list_file)} -c copy {shlex.quote(str(out_path))}"
+
+    # try stream copy first
+    cmd = f"{FFMPEG} -y -f concat -safe 0 -i {shlex.quote(list_file)} -c copy {shlex.quote(str(out_path.resolve()))}"
     proc = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     print(proc.stdout)
     if proc.returncode != 0 or not out_path.exists():
         # fallback re-encode
         vf = "format=yuv420p"
-        cmd2 = f"{FFMPEG} -y -f concat -safe 0 -i {shlex.quote(list_file)} -vf {vf} -c:v libx264 -pix_fmt yuv420p -preset veryfast {shlex.quote(str(out_path))}"
+        cmd2 = f"{FFMPEG} -y -f concat -safe 0 -i {shlex.quote(list_file)} -vf {vf} -c:v libx264 -pix_fmt yuv420p -preset veryfast {shlex.quote(str(out_path.resolve()))}"
         proc2 = subprocess.run(cmd2, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         print(proc2.stdout)
         if proc2.returncode != 0:
             raise SystemExit("[router] concat failed")
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--series", required=True)
@@ -84,6 +87,9 @@ def main():
 
         if out.exists():
             made.append(str(out))
+
+    print("[router] shots:", *[str(Path(p).resolve()) for p in made], sep="\n  - ")
+
 
     if not made:
         print("[router] no shots produced; skipping visuals build")
