@@ -1,21 +1,23 @@
 # generator/select_stock.py
-import argparse, shutil, re, random
+import argparse, json, os, random, re, subprocess
 from pathlib import Path
 
-TAGS = {
-    # add more tags/folders as you build your library
-    "vectors": ["vector", "arrow", "geometry"],
-    "matrix": ["matrix", "grid", "numbers"],
-    "algebra": ["algebra", "math", "chalkboard"],
-    "space": ["space", "cosmos", "stars", "nebula"],
-    "tech": ["ai", "robot", "circuit", "hud"],
-    "abstract": ["abstract", "loop", "gradient", "liquid"],
-}
+FFPROBE = "ffprobe"
 
-def extract_keywords(text: str):
-    text = text.lower()
-    words = set(re.findall(r"[a-z]{3,}", text))
-    return words
+def probe_dur(p: Path) -> float:
+    try:
+        out = subprocess.check_output(
+            [FFPROBE, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nk=1:nw=1", str(p)],
+            text=True
+        ).strip()
+        return float(out)
+    except Exception:
+        return 0.0
+
+def tokens_from(text: str) -> set:
+    words = re.findall(r"[a-z0-9_]+", (text or "").lower())
+    return set(words)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -23,50 +25,58 @@ def main():
     ap.add_argument("--max_clips", type=int, default=6)
     args = ap.parse_args()
 
-    series_dir = Path("out") / args.series
-    plan_path = sorted(series_dir.glob("ep_*/plan.json"))[-1]
+    series = args.series
+    out_dir = Path("out") / series
+    plan_path = sorted(out_dir.glob("ep_*/plan.json"))[-1]
     ep_dir = plan_path.parent
     assets = ep_dir / "assets"
-    stock_root = Path("assets") / "stock"  # your library root
-    sel_dir = assets / "stock_sel"
-    sel_dir.mkdir(parents=True, exist_ok=True)
+    assets.mkdir(parents=True, exist_ok=True)
 
-    title = (assets / "title.txt").read_text(encoding="utf-8") if (assets / "title.txt").exists() else ""
-    overlay = (assets / "overlay.txt").read_text(encoding="utf-8") if (assets / "overlay.txt").exists() else ""
-    narration = (assets / "narration.txt").read_text(encoding="utf-8") if (assets / "narration.txt").exists() else ""
-    words = extract_keywords(" ".join([title, overlay, narration]))
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    # Pull topic cues
+    cues = " ".join([
+        plan.get("ai_title",""),
+        plan.get("ai_overlay",""),
+        plan.get("ai_narration",""),
+        plan.get("title",""),
+        plan.get("theme","")
+    ])
+    tok = tokens_from(cues)
 
-    # Find candidate tag folders
-    tag_scores = []
-    for tag, hints in TAGS.items():
-        score = sum(1 for h in hints if h in words)
-        if score > 0:
-            tag_scores.append((score, tag))
-    tag_scores.sort(reverse=True)
+    # Gather candidate files
+    roots = [Path("assets/stock/common"), Path(f"assets/stock/{series}")]
+    files = []
+    for r in roots:
+        if r.exists():
+            for p in r.glob("**/*.mp4"):
+                files.append(p)
 
-    # Build candidate file list
-    candidates = []
-    if tag_scores:
-        for _, tag in tag_scores:
-            candidates += list((stock_root / tag).glob("*.mp4"))
-    # always add some abstracts as fallback
-    candidates += list((stock_root / "abstract").glob("*.mp4"))
+    if not files:
+        print("[stock] no stock files found; skipping visuals")
+        return
 
-    # unique, sample
-    seen = set()
-    uniq = []
-    for p in candidates:
-        if p not in seen:
-            uniq.append(p); seen.add(p)
-    random.shuffle(uniq)
-    picks = uniq[: args.max_clips]
+    # Score by simple tag overlap (filename tokens)
+    scored = []
+    for p in files:
+        name_tok = tokens_from(p.stem)
+        score = len(tok & name_tok)
+        dur = probe_dur(p)
+        scored.append((score, dur, p))
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
-    # copy into episode
-    for i, src in enumerate(picks):
-        dst = sel_dir / f"clip_{i:02d}.mp4"
-        shutil.copy2(src, dst)
+    # Keep clips with nonzero score first, then fill with others
+    nonzero = [t for t in scored if t[0] > 0]
+    zero = [t for t in scored if t[0] == 0]
+    picked = (nonzero + zero)[:args.max_clips]
+    picked_paths = [p for _,_,p in picked]
 
-    print(f"[stock] selected {len(picks)} clips into {sel_dir}")
+    # Save list for cutter
+    lst = assets / "stock_list.txt"
+    lst.write_text("\n".join(str(p) for p in picked_paths), encoding="utf-8")
+
+    print("[stock] picked:")
+    for p in picked_paths:
+        print(" -", p)
 
 if __name__ == "__main__":
     main()
