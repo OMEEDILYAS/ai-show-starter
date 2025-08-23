@@ -243,13 +243,13 @@ jobs:
           echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
 
       - name: Post to Instagram (ai_teacher) — REAL
-        if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
+        if: ${{ matrix.series == 'ai_teacher' && steps.publish_url.outputs.url != '' && !cancelled() }}
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: |
-          set -euo pipefail
-          python -u publisher/post_instagram.py "${{ steps.publish_url.outputs.url }}" "Daily episode 🚀 #ai #reels #${{ matrix.series }}"
+          echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
+          python publisher/post_instagram.py "${{ steps.publish_url.outputs.url }}" "Daily episode 🚀 #ai #reels #${{ matrix.series }}"
 
       # ---- Keep aggregator as DRY marker ----
       - name: Publish (DRY RUN aggregate)
