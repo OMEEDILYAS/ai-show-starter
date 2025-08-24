@@ -86,6 +86,11 @@ jobs:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: python generator/fetch_stock.py --series "$SERIES" --max_new 4 --per_query 8
 
+      - name: Debug fetched_list
+        run: |
+          echo "Fetched list for ${{ matrix.series }}:"
+          cat out/${{ matrix.series }}/ep_*/assets/fetched_list.txt || echo "not found"
+
       - name: Push new stock to gh-pages cache
         run: |
           set -e

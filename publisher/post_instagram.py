@@ -78,9 +78,9 @@ def main():
         time.sleep(5)
         try:
             poll = requests.get(
-                f"{GRAPH}/{creation_id}",
-                params={"fields": "status_code,video,error_message,error_code", "access_token": token},
-                timeout=60,
+                    f"{GRAPH}/{creation_id}",
+                    params={"fields": "status_code,error_message,error_code", "access_token": token},
+                    timeout=60,
             ).json()
         except Exception as e:
             print(f"[poll {i+1}] request error:", e)
