@@ -60,11 +60,13 @@ jobs:
 
       # ---------- plan & generate ----------
       - name: Stage curriculum (placeholder ok)
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python curriculum/extract_unit.py --series "$SERIES"
 
       - name: Plan episode
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python planner/plan_next.py --series "$SERIES"
 
       - name: Director Agent
@@ -111,7 +113,8 @@ jobs:
         run: python generator/gen_assets.py --series "$SERIES"
 
       - name: Generate fallback background (animated color)
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python generator/gen_background.py --series "$SERIES"
 
       - name: Shot list from narration
@@ -128,11 +131,13 @@ jobs:
         run: python generator/route_shots.py --series "$SERIES"
 
       - name: Select stock clips (from library)
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python generator/select_stock.py --series "$SERIES" --max_clips 6
 
       - name: Cut visuals from stock (to narration length)
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python assembly/cut_visuals.py --series "$SERIES"
 
       - name: Make captions (SRT)
@@ -142,11 +147,13 @@ jobs:
         run: python generator/make_srt.py --series "$SERIES"
 
       - name: Assemble video (prefers visuals.mp4)
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python assembly/build_video.py --series "$SERIES"
 
       - name: Validate video
-        env: { SERIES: ${{ matrix.series }} }
+        env:
+          SERIES: ${{ matrix.series }}
         run: python assembly/validate_video.py --series "$SERIES"
 
       - name: Debug list outputs
@@ -183,7 +190,6 @@ jobs:
           PY
 
       # ---------- publish to gh-pages ----------
-
       - name: Publish MP4 to gh-pages
         id: publish_url
         if: ${{ steps.mp4.outputs.found == 'true' && !cancelled() }}
@@ -251,4 +257,4 @@ jobs:
 
       - name: Collect analytics (non-blocking)
         if: always()
-        run: python analytics/pull_metrics.py --series "$SERIES" || true
+        run: python analytics/pull_metrics.py --
