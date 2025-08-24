@@ -257,4 +257,6 @@ jobs:
 
       - name: Collect analytics (non-blocking)
         if: always()
-        run: python analytics/pull_metrics.py --
+        env:
+          SERIES: ${{ matrix.series }}
+        run: python analytics/pull_metrics.py --series "$SERIES" || true
