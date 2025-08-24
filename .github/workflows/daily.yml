@@ -1,24 +1,22 @@
 name: daily-episodes
 on:
   schedule:
-    - cron: "0 15 * * *"   # daily 15:00 UTC
+    - cron: "0 15 * * *"
   workflow_dispatch:
-
 permissions:
   contents: write
 
 jobs:
   episode:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         series: [ai_teacher, ai_drama, ai_memes]
-
-    env:
-      # Make local imports work (adapters/, generator/, etc.)
-      PYTHONPATH: ${{ github.workspace }}
+    concurrency:
+      group: daily-${{ matrix.series }}
+      cancel-in-progress: false
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v4
@@ -60,15 +58,13 @@ jobs:
             rsync -a "site/stock/common/" "assets/stock/common/" || true
           fi
 
-      # ---------- curriculum & planning ----------
+      # ---------- plan & generate ----------
       - name: Stage curriculum (placeholder ok)
-        env:
-          SERIES: ${{ matrix.series }}
+        env: { SERIES: ${{ matrix.series }} }
         run: python curriculum/extract_unit.py --series "$SERIES"
 
       - name: Plan episode
-        env:
-          SERIES: ${{ matrix.series }}
+        env: { SERIES: ${{ matrix.series }} }
         run: python planner/plan_next.py --series "$SERIES"
 
       - name: Director Agent
@@ -78,18 +74,12 @@ jobs:
           OPENAI_MODEL: gpt-4o
         run: python planner/agent_director.py --series "$SERIES"
 
-      # ---------- fetch new stock via APIs ----------
       - name: Fetch stock clips (Pexels/Pixabay)
         env:
           SERIES: ${{ matrix.series }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: python generator/fetch_stock.py --series "$SERIES" --max_new 4 --per_query 8
-
-      - name: Debug fetched_list
-        run: |
-          echo "Fetched list for ${{ matrix.series }}:"
-          cat out/${{ matrix.series }}/ep_*/assets/fetched_list.txt || echo "not found"
 
       - name: Push new stock to gh-pages cache
         run: |
@@ -110,9 +100,8 @@ jobs:
           git add "stock/${{ matrix.series }}" "stock/common" || true
           git commit -m "stock cache update (${{ matrix.series }}) from run ${{ github.run_id }}" || echo "nothing to commit"
           git pull --rebase origin gh-pages || true
-          git push origin HEAD:gh-pages
+          git push
 
-      # ---------- core assets ----------
       - name: Generate assets (OpenAI TTS)
         env:
           SERIES: ${{ matrix.series }}
@@ -122,8 +111,7 @@ jobs:
         run: python generator/gen_assets.py --series "$SERIES"
 
       - name: Generate fallback background (animated color)
-        env:
-          SERIES: ${{ matrix.series }}
+        env: { SERIES: ${{ matrix.series }} }
         run: python generator/gen_background.py --series "$SERIES"
 
       - name: Shot list from narration
@@ -136,13 +124,16 @@ jobs:
       - name: Route shots via adapters → visuals.mp4
         env:
           SERIES: ${{ matrix.series }}
+          PYTHONPATH: ${{ github.workspace }}
         run: python generator/route_shots.py --series "$SERIES"
 
-      # (Removed legacy cut_visuals to avoid overwriting visuals.mp4)
+      - name: Select stock clips (from library)
+        env: { SERIES: ${{ matrix.series }} }
+        run: python generator/select_stock.py --series "$SERIES" --max_clips 6
 
-      - name: Debug visuals existence
-        run: |
-          ls -l out/${{ matrix.series }}/ep_*/assets/visuals.mp4 || echo "no visuals.mp4"
+      - name: Cut visuals from stock (to narration length)
+        env: { SERIES: ${{ matrix.series }} }
+        run: python assembly/cut_visuals.py --series "$SERIES"
 
       - name: Make captions (SRT)
         env:
@@ -151,15 +142,11 @@ jobs:
         run: python generator/make_srt.py --series "$SERIES"
 
       - name: Assemble video (prefers visuals.mp4)
-        env:
-          SERIES: ${{ matrix.series }}
+        env: { SERIES: ${{ matrix.series }} }
         run: python assembly/build_video.py --series "$SERIES"
 
-        # build_video.py prints: [assembly] using source: <.../visuals.mp4 OR .../bg.mp4>
-
       - name: Validate video
-        env:
-          SERIES: ${{ matrix.series }}
+        env: { SERIES: ${{ matrix.series }} }
         run: python assembly/validate_video.py --series "$SERIES"
 
       - name: Debug list outputs
@@ -168,7 +155,7 @@ jobs:
           echo "Tree for series=${{ matrix.series }}:"
           find out/${{ matrix.series }} -maxdepth 3 -type f -print || true
 
-      # ---------- find & publish ----------
+      # ---------- resolve mp4 path ----------
       - name: Resolve MP4 from plan.json
         id: mp4
         run: |
@@ -176,24 +163,26 @@ jobs:
           import json, os
           from pathlib import Path
           series = "${{ matrix.series }}"
-          outdir = Path("out") / series
-          found = False; path = ""
+          outdir = Path("out")/series
+          found=False; path=""
           plans = sorted(outdir.glob("ep_*/plan.json"))
           if plans:
             plan = json.loads(plans[-1].read_text(encoding="utf-8"))
-            vid = plan.get("video_path", "")
+            vid = plan.get("video_path","")
             if vid and Path(vid).exists():
-              found = True; path = vid
+              found=True; path=vid
           if not found:
-            finals = sorted((outdir / "final").glob("*.mp4"))
+            finals = sorted((outdir/"final").glob("*.mp4"))
             if finals:
-              found = True; path = str(finals[-1])
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              found=True; path=str(finals[-1])
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
             f.write(f"found={'true' if found else 'false'}\n")
             if found: f.write(f"file={path}\n")
           print(f"found={'true' if found else 'false'}")
           if found: print(f"file={path}")
           PY
+
+      # ---------- publish to gh-pages ----------
 
       - name: Publish MP4 to gh-pages
         id: publish_url
@@ -213,21 +202,38 @@ jobs:
           git push
           echo "url=https://omeedilyas.github.io/ai-show-starter/reels/${{ matrix.series }}/$NAME" >> "$GITHUB_OUTPUT"
 
-      # ---- Real Instagram only for ai_teacher ----
-      - name: Echo reel URL (ai_teacher)
-        if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
-        run: | 
-          echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
+      # ---------- wait until URL is live (HEAD 200 + video/*) ----------
+      - name: Wait for GH Pages to serve reel
+        id: wait_live
+        if: ${{ steps.mp4.outputs.found == 'true' && !cancelled() }}
+        run: |
+          set -e
+          URL="${{ steps.publish_url.outputs.url }}"
+          echo "Waiting on: $URL"
+          for i in {1..90}; do
+            code=$(curl -sI -o /dev/null -w "%{http_code}" "$URL" || true)
+            ctype=$(curl -sI "$URL" | awk -F': ' 'tolower($1)=="content-type"{print tolower($2)}' | tr -d '\r' || true)
+            echo "[try $i] code=$code ctype=$ctype"
+            if [ "$code" = "200" ] && [[ "$ctype" == video/* ]]; then
+              echo "ready=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          exit 0
 
+      # ---------- Instagram (real only for ai_teacher) ----------
       - name: Post to Instagram (ai_teacher) — REAL
-        if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
+        if: ${{ matrix.series == 'ai_teacher' && steps.wait_live.outputs.ready == 'true' && !cancelled() }}
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: |
+          echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
           python publisher/post_instagram.py "${{ steps.publish_url.outputs.url }}" "Daily episode 🚀 #ai #reels #${{ matrix.series }}"
 
-      # ---- DRY marker (does nothing real) ----
+      # ---------- aggregator DRY marker ----------
       - name: Publish (DRY RUN aggregate)
         if: ${{ !cancelled() }}
         env:
