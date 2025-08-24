@@ -128,7 +128,9 @@ jobs:
         env:
           SERIES: ${{ matrix.series }}
           PYTHONPATH: ${{ github.workspace }}
+          ROUTER_DIAG: "1"
         run: python generator/route_shots.py --series "$SERIES"
+        
 
       - name: Select stock clips (from library)
         env:
