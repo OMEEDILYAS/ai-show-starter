@@ -1,22 +1,24 @@
 name: daily-episodes
 on:
   schedule:
-    - cron: "0 15 * * *"
+    - cron: "0 15 * * *"   # daily 15:00 UTC
   workflow_dispatch:
+
 permissions:
   contents: write
 
 jobs:
   episode:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         series: [ai_teacher, ai_drama, ai_memes]
-    concurrency:
-      group: daily-${{ matrix.series }}
-      cancel-in-progress: false
-    timeout-minutes: 40
+
+    env:
+      # Make local imports work (adapters/, generator/, etc.)
+      PYTHONPATH: ${{ github.workspace }}
 
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +42,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-      # ----------------- PULL STOCK CACHE FROM gh-pages -----------------
+      # ---------- pull stock cache ----------
       - name: Checkout gh-pages into site/
         uses: actions/checkout@v4
         with:
@@ -58,7 +60,7 @@ jobs:
             rsync -a "site/stock/common/" "assets/stock/common/" || true
           fi
 
-      # ----------------- CURRICULUM & PLANNING -----------------
+      # ---------- curriculum & planning ----------
       - name: Stage curriculum (placeholder ok)
         env:
           SERIES: ${{ matrix.series }}
@@ -76,7 +78,7 @@ jobs:
           OPENAI_MODEL: gpt-4o
         run: python planner/agent_director.py --series "$SERIES"
 
-      # ----------------- FETCH NEW STOCK VIA APIs -----------------
+      # ---------- fetch new stock via APIs ----------
       - name: Fetch stock clips (Pexels/Pixabay)
         env:
           SERIES: ${{ matrix.series }}
@@ -84,7 +86,6 @@ jobs:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: python generator/fetch_stock.py --series "$SERIES" --max_new 4 --per_query 8
 
-      # Push any newly fetched clips to gh-pages cache for future runs
       - name: Push new stock to gh-pages cache
         run: |
           set -e
@@ -94,20 +95,19 @@ jobs:
           if [ ${#newfiles[@]} -gt 0 ]; then
             cp -n assets/stock/${{ matrix.series }}/*.mp4 site/stock/${{ matrix.series }}/ || true
           fi
-          # (optional common dir)
           if [ -d assets/stock/common ]; then
             mkdir -p site/stock/common
             cp -n assets/stock/common/*.mp4 site/stock/common/ 2>/dev/null || true
           fi
-
           cd site
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "stock/${{ matrix.series }}" "stock/common" || true
           git commit -m "stock cache update (${{ matrix.series }}) from run ${{ github.run_id }}" || echo "nothing to commit"
+          git pull --rebase origin gh-pages || true
           git push origin HEAD:gh-pages
 
-      # ----------------- GENERATE CORE ASSETS -----------------
+      # ---------- core assets ----------
       - name: Generate assets (OpenAI TTS)
         env:
           SERIES: ${{ matrix.series }}
@@ -131,20 +131,10 @@ jobs:
       - name: Route shots via adapters → visuals.mp4
         env:
           SERIES: ${{ matrix.series }}
-          PYTHONPATH: ${{ github.workspace }}
         run: python generator/route_shots.py --series "$SERIES"
 
+      # (Removed legacy cut_visuals to avoid overwriting visuals.mp4)
 
-      - name: Select stock clips (from library)
-        env:
-          SERIES: ${{ matrix.series }}
-        run: python generator/select_stock.py --series "$SERIES" --max_clips 6
-
-      - name: Cut visuals from stock (to narration length)
-        env:
-          SERIES: ${{ matrix.series }}
-        run: python assembly/cut_visuals.py --series "$SERIES"
-      
       - name: Debug visuals existence
         run: |
           ls -l out/${{ matrix.series }}/ep_*/assets/visuals.mp4 || echo "no visuals.mp4"
@@ -160,6 +150,8 @@ jobs:
           SERIES: ${{ matrix.series }}
         run: python assembly/build_video.py --series "$SERIES"
 
+        # build_video.py prints: [assembly] using source: <.../visuals.mp4 OR .../bg.mp4>
+
       - name: Validate video
         env:
           SERIES: ${{ matrix.series }}
@@ -171,87 +163,65 @@ jobs:
           echo "Tree for series=${{ matrix.series }}:"
           find out/${{ matrix.series }} -maxdepth 3 -type f -print || true
 
-      # ----------------- FIND & PUBLISH -----------------
+      # ---------- find & publish ----------
       - name: Resolve MP4 from plan.json
         id: mp4
         run: |
           python - <<'PY'
           import json, os
           from pathlib import Path
-
           series = "${{ matrix.series }}"
           outdir = Path("out") / series
-
-          found = False
-          path = ""
-
+          found = False; path = ""
           plans = sorted(outdir.glob("ep_*/plan.json"))
           if plans:
             plan = json.loads(plans[-1].read_text(encoding="utf-8"))
             vid = plan.get("video_path", "")
             if vid and Path(vid).exists():
-              found = True
-              path = vid
-
+              found = True; path = vid
           if not found:
             finals = sorted((outdir / "final").glob("*.mp4"))
             if finals:
-              found = True
-              path = str(finals[-1])
-
-          # set real step outputs
+              found = True; path = str(finals[-1])
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             f.write(f"found={'true' if found else 'false'}\n")
-            if found:
-              f.write(f"file={path}\n")
-
-          # also echo for logs
+            if found: f.write(f"file={path}\n")
           print(f"found={'true' if found else 'false'}")
-          if found:
-            print(f"file={path}")
+          if found: print(f"file={path}")
           PY
 
       - name: Publish MP4 to gh-pages
         id: publish_url
-        if: ${{ steps.mp4.outputs.found == 'true' && steps.vis.outputs.skip != 'true' && !cancelled() }}
+        if: ${{ steps.mp4.outputs.found == 'true' && !cancelled() }}
         run: |
           set -e
           FILE="${{ steps.mp4.outputs.file }}"
-          # Make a unique, cache-busting name per run (series-runId.mp4)
           NAME="${{ matrix.series }}-${{ github.run_id }}.mp4"
-
           mkdir -p site/reels/${{ matrix.series }}
           cp "$FILE" "site/reels/${{ matrix.series }}/$NAME"
-
           cd site
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "reels/${{ matrix.series }}/$NAME"
           git commit -m "reel: $NAME (${{ matrix.series }}) from run ${{ github.run_id }}" || true
-
-          # Avoid non-fast-forward errors if multiple jobs push gh-pages:
           git pull --rebase origin gh-pages || true
           git push
-
           echo "url=https://omeedilyas.github.io/ai-show-starter/reels/${{ matrix.series }}/$NAME" >> "$GITHUB_OUTPUT"
 
-
-      # ---- Real Instagram only for ai_teacher (keep others dry) ----
+      # ---- Real Instagram only for ai_teacher ----
       - name: Echo reel URL (ai_teacher)
         if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
-        run: |
-          echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
+        run: echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
 
       - name: Post to Instagram (ai_teacher) — REAL
-        if: ${{ matrix.series == 'ai_teacher' && steps.publish_url.outputs.url != '' && !cancelled() }}
+        if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: |
-          echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
           python publisher/post_instagram.py "${{ steps.publish_url.outputs.url }}" "Daily episode 🚀 #ai #reels #${{ matrix.series }}"
 
-      # ---- Keep aggregator as DRY marker ----
+      # ---- DRY marker (does nothing real) ----
       - name: Publish (DRY RUN aggregate)
         if: ${{ !cancelled() }}
         env:
