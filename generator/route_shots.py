@@ -25,7 +25,34 @@ def _sh(cmd: List[str]) -> None:
 
 def _load_shotlist(path: Path) -> List[Dict]:
     with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    
+    # Handle different shotlist formats
+    if isinstance(data, list):
+        # If it's already a list, check if items are dicts or strings
+        if data and isinstance(data[0], str):
+            # Convert strings to beat dictionaries
+            beats = []
+            for i, text in enumerate(data):
+                beats.append({
+                    "text": text,
+                    "keywords": [],
+                    "title": f"Beat {i+1}",
+                    "duration": 5.0
+                })
+            return beats
+        else:
+            return data
+    elif isinstance(data, dict):
+        # If it's a dict, look for 'beats' key
+        if "beats" in data:
+            return data["beats"]
+        else:
+            # Convert single dict to list
+            return [data]
+    else:
+        # Fallback: create a single beat
+        return [{"text": str(data), "keywords": [], "title": "Single Beat", "duration": 5.0}]
 
 def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
