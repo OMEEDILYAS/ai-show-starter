@@ -4,19 +4,25 @@ import argparse, json, os, sys, tempfile, subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-# Local adapters
+# Local adapters - handle missing adapters gracefully
+slide_adapter = None
+diagram_adapter = None
+card_adapter = None
+
 try:
     from adapters import slide as slide_adapter
-except Exception:
-    slide_adapter = None
+except ImportError:
+    pass
+
 try:
-    from adapters import diagram as diagram_adapter
-except Exception:
-    diagram_adapter = None
+    from adapters import diagram as diagram_adapter  
+except ImportError:
+    pass
+
 try:
     from adapters import card as card_adapter
-except Exception:
-    card_adapter = None
+except ImportError:
+    pass
 
 FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
 
@@ -123,15 +129,22 @@ def _concat_shots_to_visuals(shots: List[Path], visuals_path: Path) -> None:
         raise RuntimeError("No shots to concat.")
     with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", suffix=".txt") as f:
         for p in shots:
-            f.write(f"file '{p.as_posix()}'\n")
+            f.write(f"file '{p.absolute()}'\n")
         list_path = Path(f.name)
-    cmd = [
-        FFMPEG, "-y",
-        "-f", "concat", "-safe", "0", "-i", str(list_path),
-        "-c", "copy",
-        str(visuals_path),
-    ]
-    _sh(cmd)
+    try:
+        cmd = [
+            FFMPEG, "-y",
+            "-f", "concat", "-safe", "0", "-i", str(list_path),
+            "-c", "copy",
+            str(visuals_path),
+        ]
+        _sh(cmd)
+    finally:
+        # Clean up temp file
+        try:
+            list_path.unlink()
+        except Exception:
+            pass
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -171,7 +184,7 @@ def main() -> int:
 
         # Execute adapter
         try:
-            if adapter_name == "card" and card_adapter:
+            if adapter_name == "card" and card_adapter and hasattr(card_adapter, 'render'):
                 # Card can consume bg + optional stock clip
                 card_adapter.render(
                     bg_path=bg_path,
@@ -182,7 +195,7 @@ def main() -> int:
                     stock_dir=stock_dir,      # card will match again if stock_path is None
                     duration=beat.get("duration"),
                 )
-            elif adapter_name == "diagram" and diagram_adapter:
+            elif adapter_name == "diagram" and diagram_adapter and hasattr(diagram_adapter, 'render'):
                 diagram_adapter.render(
                     bg_path=bg_path,
                     out_path=out,
@@ -191,7 +204,7 @@ def main() -> int:
                     keywords=keywords,
                     duration=beat.get("duration"),
                 )
-            elif slide_adapter:
+            elif adapter_name == "slide" and slide_adapter and hasattr(slide_adapter, 'render'):
                 slide_adapter.render(
                     bg_path=bg_path,
                     out_path=out,
@@ -202,27 +215,36 @@ def main() -> int:
                 )
             else:
                 # Fallback: copy a short chunk of bg.mp4 so pipeline doesn't break
-                tmp_out = out.with_suffix(".tmp.mp4")
-                cmd = [
-                    FFMPEG, "-y",
-                    "-i", str(bg_path),
-                    "-t", "4.9",
-                    "-c", "copy",
-                    str(tmp_out),
-                ]
-                _sh(cmd)
-                tmp_out.rename(out)
+                if bg_path.exists():
+                    cmd = [
+                        FFMPEG, "-y",
+                        "-i", str(bg_path),
+                        "-t", "4.9",
+                        "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        str(out),
+                    ]
+                    _sh(cmd)
+                else:
+                    # Absolute fallback - solid color
+                    cmd = [
+                        FFMPEG, "-y",
+                        "-f", "lavfi", "-i", "color=c=black:s=1080x1920:d=4.9",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        str(out),
+                    ]
+                    _sh(cmd)
 
         except Exception as e:
             print(f"[router] ERROR beat {i} ({adapter_name}): {e}")
             # create a tiny safe fallback so concatenation still works
-            cmd = [
-                FFMPEG, "-y",
-                "-f", "lavfi", "-i", "color=c=black:s=1080x1920:d=4.9",
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                str(out),
-            ]
             try:
+                cmd = [
+                    FFMPEG, "-y",
+                    "-f", "lavfi", "-i", "color=c=black:s=1080x1920:d=4.9",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    str(out),
+                ]
                 _sh(cmd)
             except Exception as e2:
                 print(f"[router] ABORT beat {i}: fallback failed: {e2}")
