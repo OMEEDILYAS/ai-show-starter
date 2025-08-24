@@ -40,6 +40,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
 
+      - name: Verify ffmpeg
+        run: |
+          ffmpeg -version
+          ffprobe -version || true
+
+
       # ---------- pull stock cache ----------
       - name: Checkout gh-pages into site/
         uses: actions/checkout@v4
@@ -59,6 +65,21 @@ jobs:
           fi
 
       # ---------- plan & generate ----------
+      - name: Generate placeholder stock clips
+        run: |
+          mkdir -p assets/stock/ai_teacher
+          # 5s vertical 1080x1920 gradient with moving text
+          ffmpeg -y -f lavfi -i "color=c=#202a44:s=1080x1920:d=5" \
+            -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='AI / Vectors':fontsize=96:fontcolor=white:x=w/2-200+50*t:y=h/2-60" \
+            assets/stock/ai_teacher/vectors.mp4
+          ffmpeg -y -f lavfi -i "color=c=#2a4433:s=1080x1920:d=5" \
+            -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='Features & Patterns':fontsize=80:fontcolor=white:x=w/2-250-40*t:y=h/2" \
+            assets/stock/ai_teacher/patterns.mp4
+          ffmpeg -y -f lavfi -i "color=c=#44332a:s=1080x1920:d=5" \
+            -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='Data Points':fontsize=80:fontcolor=white:x=(w-tw)/2:y=200+30*t" \
+            assets/stock/ai_teacher/datapoints.mp4
+          ls -lh assets/stock/ai_teacher
+
       - name: Stage curriculum (placeholder ok)
         env:
           SERIES: ${{ matrix.series }}
@@ -130,7 +151,16 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           ROUTER_DIAG: "1"
         run: python generator/route_shots.py --series "$SERIES"
-        
+
+      - name: Debug shots and visuals
+        run: |
+          echo "Shots:"
+          ls -lh out/ai_teacher/ep_001/assets/shots || true
+          echo "Router visuals:"
+          ls -lh out/ai_teacher/ep_001/assets/visuals*.mp4 || true
+          # Probe first shot (optional)
+          ffprobe -v error -show_streams -show_format out/ai_teacher/ep_001/assets/shots/000.mp4 || true
+
 
       - name: Select stock clips (from library)
         env:
