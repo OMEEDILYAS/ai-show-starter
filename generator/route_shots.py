@@ -100,6 +100,9 @@ def main():
             except SystemExit as e:
                 print(f"[router] beat {i}: type render failed ({e}); fallback SLIDE")
                 make_slide(text=text, out=out, dur=dur, title=None)
+        
+        adapter_used = t if t in ("slide","diagram","math","map","code") else "stock"
+        print(f"[router] beat {i}: used {adapter_used.upper()} for keywords {kws} -> {out}")
 
         if out.exists() and out.stat().st_size > 0:
             made.append(str(out.resolve()))

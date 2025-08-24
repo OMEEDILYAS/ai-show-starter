@@ -135,7 +135,7 @@ jobs:
           SERIES: ${{ matrix.series }}
         run: python generator/select_stock.py --series "$SERIES" --max_clips 6
 
-      - name: Cut visuals from stock (to narration length)
+      - name: Cut visuals to narration length (prefers router)
         env:
           SERIES: ${{ matrix.series }}
         run: python assembly/cut_visuals.py --series "$SERIES"
