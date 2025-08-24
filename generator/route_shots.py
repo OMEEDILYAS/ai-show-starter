@@ -185,34 +185,34 @@ def main() -> int:
         # Execute adapter
         try:
             if adapter_name == "card" and card_adapter and hasattr(card_adapter, 'render'):
-                # Card can consume bg + optional stock clip
+                # Card adapter uses the correct signature already
                 card_adapter.render(
                     bg_path=bg_path,
                     out_path=out,
                     title=(title or " "),
                     text=text,
                     keywords=keywords,
-                    stock_dir=stock_dir,      # card will match again if stock_path is None
-                    duration=beat.get("duration"),
+                    stock_dir=stock_dir,
+                    duration=beat.get("duration", 5.9),
                 )
-            elif adapter_name == "diagram" and diagram_adapter and hasattr(diagram_adapter, 'render'):
-                diagram_adapter.render(
-                    bg_path=bg_path,
-                    out_path=out,
-                    title=(title or " "),
-                    text=text,
-                    keywords=keywords,
-                    duration=beat.get("duration"),
-                )
-            elif adapter_name == "slide" and slide_adapter and hasattr(slide_adapter, 'render'):
-                slide_adapter.render(
-                    bg_path=bg_path,
-                    out_path=out,
-                    title=(title or " "),
-                    text=text,
-                    keywords=keywords,
-                    duration=beat.get("duration"),
-                )
+            elif adapter_name == "diagram" and diagram_adapter and hasattr(diagram_adapter, 'make'):
+                # Diagram adapter uses different signature
+                beat_dict = {
+                    "keywords": keywords,
+                    "text": text,
+                    "title": title,
+                    "dur": beat.get("duration", 5.9)
+                }
+                diagram_adapter.make(beat_dict, i, shots_dir.parent.parent)
+            elif adapter_name == "slide" and slide_adapter and hasattr(slide_adapter, 'make'):
+                # Slide adapter uses different signature  
+                beat_dict = {
+                    "title": title,
+                    "text": text,
+                    "keywords": keywords,
+                    "dur": beat.get("duration", 5.9)
+                }
+                slide_adapter.make(beat_dict, i, shots_dir.parent.parent)
             else:
                 # Fallback: copy a short chunk of bg.mp4 so pipeline doesn't break
                 if bg_path.exists():
