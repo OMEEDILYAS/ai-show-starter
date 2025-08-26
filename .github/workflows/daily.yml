@@ -164,6 +164,30 @@ jobs:
           FORCE_CARD: ${{ env.FORCE_CARD }}   # router_shots.py reads this; ensures Card visuals
         run: python generator/route_shots.py --series "${{ matrix.series }}"
 
+      - name: Diagnose visuals & stock (readable logs)
+        run: |
+          set -e
+          series="${{ matrix.series }}"
+          echo "---- STOCK LIBRARY ----"
+          ls -lh assets/stock/"$series" || echo "no series stock dir"
+          echo "---- STOCK LIST (select_stock) ----"
+          LATEST_ASSETS_DIR="$(ls -d out/"$series"/ep_*/assets 2>/dev/null | sort -r | head -n1 || true)"
+          if [ -n "$LATEST_ASSETS_DIR" ]; then
+            STOCK_LIST="$LATEST_ASSETS_DIR/stock_list.txt"
+            if [ -f "$STOCK_LIST" ]; then
+              cat "$STOCK_LIST" || true
+            else
+              echo "No stock_list.txt (select_stock may not have run or found nothing)."
+            fi
+            echo "---- SHOTS ----"
+            ls -lh "$LATEST_ASSETS_DIR/shots" || true
+            echo "---- VISUALS ----"
+            ls -lh "$LATEST_ASSETS_DIR"/visuals*.mp4 || true
+          else
+            echo "No episode assets dir found."
+          fi
+
+
       - name: Build/trim visuals to narration
         run: python assembly/cut_visuals.py --series "${{ matrix.series }}"
 
@@ -233,22 +257,58 @@ jobs:
 
 
       # --- Publish the MP4 into gh-pages (stable, fetchable URL) ---
-      - name: Publish MP4 to gh-pages (reels/<series>/<timestamped>.mp4)
+      - name: Publish MP4 to gh-pages (robust push)
         id: publish
         run: |
           set -e
+          series="${{ matrix.series }}"
           FILE="${{ steps.meta.outputs.mp4 }}"
-          NAME="${{ matrix.series }}-${{ github.run_id }}.mp4"
-          mkdir -p site/reels/${{ matrix.series }}
-          cp "$FILE" "site/reels/${{ matrix.series }}/$NAME"
+          NAME="${series}-${{ github.run_id }}.mp4"
+
+          # Stage file into the checked-out gh-pages worktree (site/)
+          mkdir -p site/reels/"$series"
+          cp "$FILE" "site/reels/$series/$NAME"
+
           cd site
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "reels/${{ matrix.series }}/$NAME"
-          git commit -m "reel: $NAME (${{ matrix.series }}) from run ${{ github.run_id }}" || true
-          git pull --rebase origin gh-pages || true
-          git push
+
+          git add "reels/$series/$NAME"
+
+          # Create a commit even if nothing staged (won't error if nothing new)
+          git commit -m "reel: $NAME ($series) from run ${{ github.run_id }}" || true
+
+          # Robust push: fetch, rebase, retry push to avoid "cannot lock ref" races
+          git fetch origin gh-pages
+
+          # Rebase our local commit(s) onto the remote tip
+          git rebase origin/gh-pages || {
+            echo "Rebase failed; aborting and resetting to remote tip."
+            git rebase --abort || true
+            git reset --hard origin/gh-pages
+            # Re-apply our file and recommit
+            cp "reels/$series/$NAME" "reels/$series/$NAME" # no-op safeguard
+            git add "reels/$series/$NAME"
+            git commit -m "reel: $NAME ($series) from run ${{ github.run_id }}" || true
+          }
+
+          # Try push up to 5 times in case another job wins the race between fetch & push
+          for i in 1 2 3 4 5; do
+            if git push --force-with-lease origin HEAD:gh-pages; then
+              echo "Push succeeded on attempt $i"
+              break
+            fi
+            echo "Push failed (attempt $i). Fetching/rebasing then retrying…"
+            git fetch origin gh-pages
+            git rebase origin/gh-pages || { git rebase --abort || true; git reset --hard origin/gh-pages; }
+            sleep 2
+            if [ "$i" = "5" ]; then
+              echo "Push failed after retries"; exit 1
+            fi
+          done
+
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
 
       # --- WAIT for GitHub Pages to finish building the site (not just hope/guess) ---
       - name: Wait for GitHub Pages build (official API)
