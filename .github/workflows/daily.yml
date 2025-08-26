@@ -179,61 +179,50 @@ jobs:
         run: python assembly/validate_video.py --series "${{ matrix.series }}"
 
       # --- Resolve the final MP4 path and build a caption from title+overlay ---
-      - name: Resolve final mp4 & caption
+      - name: Resolve final mp4 & caption (bash + jq, no heredoc)
         id: meta
         run: |
           set -e
+
+          # Ensure jq is available (lightweight JSON parser).
+          command -v jq >/dev/null 2>&1 || sudo apt-get update && sudo apt-get install -y jq
+
           series="${{ matrix.series }}"
 
-          # --- Find the latest plan.json (may be empty if something failed earlier) ---
-          PLAN=$(ls -t out/"$series"/ep_*/plan.json 2>/dev/null | head -n1 || true)
+          # 1) Find the latest plan.json under out/<series>/ep_*/
+          PLAN="$(ls -t "out/${series}"/ep_*/plan.json 2>/dev/null | head -n1 || true)"
 
-          # --- Prefer plan["video_path"]; fallback to newest file in out/<series>/final ---
+          # 2) Prefer plan.json's .video_path; if missing, fall back to newest file in out/<series>/final/
           MP4=""
           if [ -n "$PLAN" ]; then
-            MP4=$(
-              python - "$PLAN" <<'PY'
-import json, sys
-from pathlib import Path
-
-p = Path(sys.argv[1])
-try:
-    plan = json.loads(p.read_text(encoding="utf-8"))
-except Exception:
-    plan = {}
-print(plan.get("video_path",""))
-PY
-            )
+            MP4="$(jq -r '.video_path // ""' "$PLAN")"
           fi
-
           if [ -z "$MP4" ] || [ ! -f "$MP4" ]; then
-            MP4=$(ls -t out/"$series"/final/*.mp4 2>/dev/null | head -n1 || true)
+            MP4="$(ls -t "out/${series}/final/"*.mp4 2>/dev/null | head -n1 || true)"
           fi
           if [ -z "$MP4" ]; then
             echo "No final mp4 found" >&2
             exit 1
           fi
 
-          FILE_BASENAME=$(basename "$MP4")
+          FILE_BASENAME="$(basename "$MP4")"
 
-          # --- Resolve the episode assets directory for caption text ---
-          # Prefer the ep dir from PLAN; else pick the latest ep dir under the series.
+          # 3) Build a caption from title.txt + overlay.txt (fallbacks if missing)
           if [ -n "$PLAN" ]; then
-            EP_DIR=$(dirname "$PLAN")
+            EP_DIR="$(dirname "$PLAN")"
           else
-            EP_DIR=$(ls -d out/"$series"/ep_* 2>/dev/null | sort -r | head -n1 || true)
+            EP_DIR="$(ls -d "out/${series}"/ep_* 2>/dev/null | sort -r | head -n1 || true)"
           fi
 
           TITLE="${series} Daily"
           OVERLAY="New episode!"
           if [ -n "$EP_DIR" ]; then
-            TITLE=$(cat "$EP_DIR/assets/title.txt" 2>/dev/null || echo "${series} Daily")
-            OVERLAY=$(cat "$EP_DIR/assets/overlay.txt" 2>/dev/null || echo "New episode!")
+            [ -f "$EP_DIR/assets/title.txt" ] && TITLE="$(cat "$EP_DIR/assets/title.txt")" || true
+            [ -f "$EP_DIR/assets/overlay.txt" ] && OVERLAY="$(cat "$EP_DIR/assets/overlay.txt")" || true
           fi
-
           CAPTION="${TITLE} — ${OVERLAY}"
 
-          # --- Output variables for later steps ---
+          # 4) Expose outputs to later steps
           {
             echo "mp4=$MP4"
             echo "file=$FILE_BASENAME"
@@ -241,6 +230,7 @@ PY
             echo "$CAPTION"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
 
       # --- Publish the MP4 into gh-pages (stable, fetchable URL) ---
       - name: Publish MP4 to gh-pages (reels/<series>/<timestamped>.mp4)
