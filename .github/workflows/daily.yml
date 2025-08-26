@@ -184,35 +184,63 @@ jobs:
         run: |
           set -e
           series="${{ matrix.series }}"
-          # pick latest plan.json, then read video_path
-          PLAN=$(ls -t out/"$series"/ep_*/plan.json | head -n1)
+
+          # --- Find the latest plan.json (may be empty if something failed earlier) ---
+          PLAN=$(ls -t out/"$series"/ep_*/plan.json 2>/dev/null | head -n1 || true)
+
+          # --- Prefer plan["video_path"]; fallback to newest file in out/<series>/final ---
           MP4=""
           if [ -n "$PLAN" ]; then
-            MP4=$(python - <<'PY'
-            import json,sys
-            from pathlib import Path
-            p=Path(sys.argv[1])
-            plan=json.loads(p.read_text(encoding="utf-8"))
-            print(plan.get("video_path",""))
-            PY
-            "$PLAN")
+            MP4=$(
+              python - "$PLAN" <<'PY'
+import json, sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+try:
+    plan = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    plan = {}
+print(plan.get("video_path",""))
+PY
+            )
           fi
+
           if [ -z "$MP4" ] || [ ! -f "$MP4" ]; then
-            MP4=$(ls -t out/"$series"/final/*.mp4 | head -n1)
+            MP4=$(ls -t out/"$series"/final/*.mp4 2>/dev/null | head -n1 || true)
           fi
           if [ -z "$MP4" ]; then
-            echo "No final mp4 found" >&2; exit 1
+            echo "No final mp4 found" >&2
+            exit 1
           fi
+
           FILE_BASENAME=$(basename "$MP4")
-          # Caption parts
-          TITLE=$(cat "$(dirname "$PLAN")/assets/title.txt" 2>/dev/null || echo "${series} Daily")
-          OVERLAY=$(cat "$(dirname "$PLAN")/assets/overlay.txt" 2>/dev/null || echo "New episode!")
+
+          # --- Resolve the episode assets directory for caption text ---
+          # Prefer the ep dir from PLAN; else pick the latest ep dir under the series.
+          if [ -n "$PLAN" ]; then
+            EP_DIR=$(dirname "$PLAN")
+          else
+            EP_DIR=$(ls -d out/"$series"/ep_* 2>/dev/null | sort -r | head -n1 || true)
+          fi
+
+          TITLE="${series} Daily"
+          OVERLAY="New episode!"
+          if [ -n "$EP_DIR" ]; then
+            TITLE=$(cat "$EP_DIR/assets/title.txt" 2>/dev/null || echo "${series} Daily")
+            OVERLAY=$(cat "$EP_DIR/assets/overlay.txt" 2>/dev/null || echo "New episode!")
+          fi
+
           CAPTION="${TITLE} — ${OVERLAY}"
-          echo "mp4=$MP4" >> $GITHUB_OUTPUT
-          echo "file=$FILE_BASENAME" >> $GITHUB_OUTPUT
-          echo "caption<<EOF" >> $GITHUB_OUTPUT
-          echo "$CAPTION" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+
+          # --- Output variables for later steps ---
+          {
+            echo "mp4=$MP4"
+            echo "file=$FILE_BASENAME"
+            echo "caption<<EOF"
+            echo "$CAPTION"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       # --- Publish the MP4 into gh-pages (stable, fetchable URL) ---
       - name: Publish MP4 to gh-pages (reels/<series>/<timestamped>.mp4)
