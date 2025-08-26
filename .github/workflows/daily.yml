@@ -115,7 +115,7 @@ jobs:
 
       # --- Fetch & select stock BEFORE routing (so router sees assets/stock_list.txt) ---
       - name: Fetch stock clips (Pexels/Pixabay)
-        if: ${{ secrets.PEXELS_API_KEY != '' || secrets.PIXABAY_API_KEY != '' }}
+        if: ${{ env.PEXELS_API_KEY != '' || env.PIXABAY_API_KEY != '' }}
         env:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
