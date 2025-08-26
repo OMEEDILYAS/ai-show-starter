@@ -1,26 +1,29 @@
-# generator/route_shots.py  (WB2 – stock-aware version)
+# generator/route_shots.py  (WB3 – stock-first + card-forward version)
 from __future__ import annotations
 import argparse, json, os, sys, tempfile, subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-# Local adapters - handle missing adapters gracefully
-slide_adapter = None
-diagram_adapter = None
+# --- Optional adapters (import gracefully) ---
 card_adapter = None
+slide_cards_adapter = None
+diagram_basic_adapter = None
 
 try:
-    from adapters import slide as slide_adapter
-except ImportError:
-    pass
-
-try:
-    from adapters import diagram as diagram_adapter  
-except ImportError:
-    pass
-
-try:
+    # adapters/card.py
     from adapters import card as card_adapter
+except ImportError:
+    pass
+
+try:
+    # adapters/slide_cards.py  -> make_slide(text, out_path, dur, title="")
+    from adapters import slide_cards as slide_cards_adapter
+except ImportError:
+    pass
+
+try:
+    # adapters/diagram_basic.py -> make_diagram(text, keywords, out_path, dur)
+    from adapters import diagram_basic as diagram_basic_adapter
 except ImportError:
     pass
 
@@ -32,12 +35,10 @@ def _sh(cmd: List[str]) -> None:
 def _load_shotlist(path: Path) -> List[Dict]:
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
-    
-    # Handle different shotlist formats
+
     if isinstance(data, list):
-        # If it's already a list, check if items are dicts or strings
         if data and isinstance(data[0], str):
-            # Convert strings to beat dictionaries
+            # Convert simple string list -> beat dicts
             beats = []
             for i, text in enumerate(data):
                 beats.append({
@@ -47,17 +48,10 @@ def _load_shotlist(path: Path) -> List[Dict]:
                     "duration": 5.0
                 })
             return beats
-        else:
-            return data
+        return data
     elif isinstance(data, dict):
-        # If it's a dict, look for 'beats' key
-        if "beats" in data:
-            return data["beats"]
-        else:
-            # Convert single dict to list
-            return [data]
+        return data.get("beats") or [data]
     else:
-        # Fallback: create a single beat
         return [{"text": str(data), "keywords": [], "title": "Single Beat", "duration": 5.0}]
 
 def _ensure_dir(p: Path) -> None:
@@ -76,54 +70,73 @@ def _series_dirs(series: str, episode: str) -> Dict[str, Path]:
         "visuals": base / "visuals.mp4",
         "shotlist": base / "shotlist.json",
         "stock": Path("assets") / "stock" / series,
+        "stock_list": base / "stock_list.txt",
     }
 
-def _match_stock(stock_dir: Path, keywords: List[str]) -> Optional[Path]:
-    """
-    Return a stock clip whose filename contains any keyword (case-insensitive).
-    If multiple match, prefer the one matching the most tokens. If none, None.
-    """
-    if not stock_dir.exists():
-        return None
-    files = sorted(p for p in stock_dir.glob("*.mp4") if p.is_file())
-    if not files:
-        return None
-    kws = [k.lower() for k in keywords if isinstance(k, str)]
-    scored: List[Tuple[int, Path]] = []
-    for p in files:
-        name = p.stem.lower()
-        score = sum(1 for k in kws if k and k in name)
-        scored.append((score, p))
-    scored.sort(key=lambda x: (-x[0], x[1].name))
-    best_score, best_path = scored[0]
-    return best_path if best_score > 0 else None
+# ---------- Stock selection helpers ----------
+def _read_stock_list(stock_list_path: Path) -> List[Path]:
+    """Prefer clips scored/selected by select_stock.py -> assets/stock_list.txt"""
+    if not stock_list_path.exists():
+        return []
+    lines = [ln.strip() for ln in stock_list_path.read_text(encoding="utf-8").splitlines()]
+    paths = [Path(ln) for ln in lines if ln]
+    return [p for p in paths if p.exists() and p.is_file()]
 
-def _pick_adapter_for_beat(
-    force_card: bool,
-    stock_dir: Path,
-    keywords: List[str],
-) -> Tuple[str, Optional[Path]]:
+def _keyword_score(name: str, keywords: List[str]) -> int:
+    n = name.lower()
+    kws = [k.lower() for k in keywords if isinstance(k, str)]
+    return sum(1 for k in kws if k and k in n)
+
+def _match_from_candidates(cands: List[Path], keywords: List[str]) -> Optional[Path]:
+    if not cands:
+        return None
+    scored = [(_keyword_score(p.stem, keywords), p) for p in cands]
+    scored.sort(key=lambda x: (-x[0], x[1].name))
+    best_score, best = scored[0]
+    return best if best_score > 0 else cands[0]  # fall back to first if no hits
+
+def _match_stock(stock_dir: Path, stock_list_path: Path, keywords: List[str]) -> Optional[Path]:
+    """
+    Choose a stock clip with priorities:
+      1) anything listed in assets/stock_list.txt (pre-scored by select_stock.py), best keyword match
+      2) any clip under assets/stock/<series> by filename keyword match
+    """
+    # 1) Prefer pre-picked list
+    preferred = _read_stock_list(stock_list_path)
+    choice = _match_from_candidates(preferred, keywords)
+    if choice:
+        return choice
+
+    # 2) Fall back to series library
+    if stock_dir.exists():
+        library = sorted(p for p in stock_dir.glob("*.mp4") if p.is_file())
+        if library:
+            return _match_from_candidates(library, keywords)
+    return None
+
+# ---------- Adapter selection ----------
+def _pick_adapter_for_beat(force_card: bool, stock_dir: Path, stock_list_path: Path, keywords: List[str]) -> Tuple[str, Optional[Path]]:
     """
     Decide which adapter to use for a beat.
-      - FORCE_CARD => ("card", maybe_stock)
-      - If matching stock => ("card", stock_path)
-      - Heuristics for diagram/slide
-    Returns (adapter_name, stock_path_if_any)
+      - If FORCE_CARD=1 => 'card' (try to attach stock)
+      - Else if any stock match => 'card' (with that stock)
+      - Else simple heuristics for diagram vs slide
     """
     if force_card:
-        sp = _match_stock(stock_dir, keywords)
+        sp = _match_stock(stock_dir, stock_list_path, keywords)
         return ("card", sp)
 
-    sp = _match_stock(stock_dir, keywords)
+    sp = _match_stock(stock_dir, stock_list_path, keywords)
     if sp is not None:
         return ("card", sp)
 
     kw = " ".join(k.lower() for k in keywords if isinstance(k, str))
-    if any(t in kw for t in ("diagram", "flow", "map", "axes", "vector", "matrix", "plot")):
+    if any(t in kw for t in ("diagram", "flow", "map", "axes", "vector", "matrix", "plot", "chart", "graph")):
         return ("diagram", None)
 
     return ("slide", None)
 
+# ---------- Concat ----------
 def _concat_shots_to_visuals(shots: List[Path], visuals_path: Path) -> None:
     if not shots:
         raise RuntimeError("No shots to concat.")
@@ -140,12 +153,12 @@ def _concat_shots_to_visuals(shots: List[Path], visuals_path: Path) -> None:
         ]
         _sh(cmd)
     finally:
-        # Clean up temp file
         try:
             list_path.unlink()
         except Exception:
             pass
 
+# ---------- Main ----------
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--series", required=True)
@@ -158,13 +171,13 @@ def main() -> int:
     shots_dir = dirs["shots"]
     visuals = dirs["visuals"]
     stock_dir = dirs["stock"]
+    stock_list_path = dirs["stock_list"]
 
     if not shotlist_path.exists():
         print(f"[router] ERROR: missing shotlist {shotlist_path}")
         return 1
 
     _ensure_dir(shots_dir)
-
     beats = _load_shotlist(shotlist_path)
     force_card = os.environ.get("FORCE_CARD", "") == "1"
 
@@ -175,61 +188,51 @@ def main() -> int:
     made: List[Path] = []
 
     for i, beat in enumerate(beats):
-        text = beat.get("text") or ""
+        text = (beat.get("text") or "").strip()
         keywords = beat.get("keywords") or []
-        title = beat.get("title") or ""  # optional field if present
+        title = (beat.get("title") or "").strip()
+        dur = float(beat.get("duration", beat.get("dur", 5.9)) or 5.9)
 
-        adapter_name, stock_path = _pick_adapter_for_beat(force_card, stock_dir, keywords)
+        adapter_name, stock_path = _pick_adapter_for_beat(force_card, stock_dir, stock_list_path, keywords)
         out = shots_dir / f"{i:03d}.mp4"
 
-        # Execute adapter
         try:
-            if adapter_name == "card" and card_adapter and hasattr(card_adapter, 'render'):
-                # Card adapter uses the correct signature already
+            if adapter_name == "card" and card_adapter and hasattr(card_adapter, "render"):
+                # Card with stock video panel when available
                 card_adapter.render(
                     bg_path=bg_path,
                     out_path=out,
                     title=(title or " "),
                     text=text,
                     keywords=keywords,
-                    stock_dir=stock_dir,
-                    duration=beat.get("duration", 5.9),
+                    stock_dir=stock_dir,  # card adapter will pick stock internally; our picker nudges via filenames/stock_list
+                    duration=dur,
                 )
-            elif adapter_name == "diagram" and diagram_adapter and hasattr(diagram_adapter, 'make'):
-                # Diagram adapter uses different signature
-                beat_dict = {
-                    "keywords": keywords,
-                    "text": text,
-                    "title": title,
-                    "dur": beat.get("duration", 5.9)
-                }
-                diagram_adapter.make(beat_dict, i, shots_dir.parent.parent)
-            elif adapter_name == "slide" and slide_adapter and hasattr(slide_adapter, 'make'):
-                # Slide adapter uses different signature  
-                beat_dict = {
-                    "title": title,
-                    "text": text,
-                    "keywords": keywords,
-                    "dur": beat.get("duration", 5.9)
-                }
-                slide_adapter.make(beat_dict, i, shots_dir.parent.parent)
+
+            elif adapter_name == "diagram" and diagram_basic_adapter and hasattr(diagram_basic_adapter, "make_diagram"):
+                # Clean diagram style (header bar + caption)
+                diagram_basic_adapter.make_diagram(text=text or title or "Diagram", keywords=keywords, out=out, dur=dur)
+
+            elif adapter_name == "slide" and slide_cards_adapter and hasattr(slide_cards_adapter, "make_slide"):
+                # Centered, readable slide with optional title
+                slide_cards_adapter.make_slide(text=text or title or "Slide", out=out, dur=dur, title=title)
+
             else:
-                # Fallback: copy a short chunk of bg.mp4 so pipeline doesn't break
+                # Fallback: if we have a bg, take a short slice; else solid color
                 if bg_path.exists():
                     cmd = [
                         FFMPEG, "-y",
                         "-i", str(bg_path),
-                        "-t", "4.9",
+                        "-t", f"{min(max(dur,1.5),15.0):.2f}",
                         "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
                         "-c:v", "libx264", "-pix_fmt", "yuv420p",
                         str(out),
                     ]
                     _sh(cmd)
                 else:
-                    # Absolute fallback - solid color
                     cmd = [
                         FFMPEG, "-y",
-                        "-f", "lavfi", "-i", "color=c=black:s=1080x1920:d=4.9",
+                        "-f", "lavfi", "-i", f"color=c=black:s=1080x1920:d={min(max(dur,1.5),15.0):.2f}",
                         "-c:v", "libx264", "-pix_fmt", "yuv420p",
                         str(out),
                     ]
@@ -237,11 +240,11 @@ def main() -> int:
 
         except Exception as e:
             print(f"[router] ERROR beat {i} ({adapter_name}): {e}")
-            # create a tiny safe fallback so concatenation still works
+            # safe fallback frame so concat still works
             try:
                 cmd = [
                     FFMPEG, "-y",
-                    "-f", "lavfi", "-i", "color=c=black:s=1080x1920:d=4.9",
+                    "-f", "lavfi", "-i", f"color=c=black:s=1080x1920:d={min(max(dur,1.5),15.0):.2f}",
                     "-c:v", "libx264", "-pix_fmt", "yuv420p",
                     str(out),
                 ]
@@ -250,11 +253,9 @@ def main() -> int:
                 print(f"[router] ABORT beat {i}: fallback failed: {e2}")
                 return 1
 
-        # Unified log line you asked for:
-        t = adapter_name
-        adapter_used = t if t in ("slide", "diagram", "math", "map", "code") else "stock"
-        kws = [k for k in keywords if isinstance(k, str)]
-        print(f"[router] beat {i}: used {adapter_used.upper()} for keywords {kws} -> {out}")
+        # Log
+        used = adapter_name.upper()
+        print(f"[router] beat {i}: used {used}  keywords={keywords}  -> {out}")
 
         made.append(out)
 

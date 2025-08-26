@@ -1,5 +1,5 @@
 # generator/gen_background.py
-import argparse, subprocess, sys
+import argparse, subprocess, sys, os
 from pathlib import Path
 
 FFMPEG = "ffmpeg"
@@ -44,20 +44,19 @@ def main():
 
     bg = assets / "bg.mp4"
 
-    # Abstract animated background:
-    # testsrc2 -> strong blur -> slight saturation boost -> yuv420p
-    # 1080x1920 @ 30fps, duration matches narration
-    filter_chain = "boxblur=20:1,eq=saturation=1.25,format=yuv420p"
+    # Solid, calm background color (override with BG_COLOR like 0x101426)
+    color_hex = os.environ.get("BG_COLOR", "0x101426")
+    filter_chain = "format=yuv420p"
     sh([
         FFMPEG, "-y",
         "-f", "lavfi",
-        "-i", f"testsrc2=size=1080x1920:rate=30",
+        "-i", f"color=c={color_hex}:s=1080x1920:r=30",
         "-t", f"{dur:.3f}",
         "-vf", filter_chain,
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
         str(bg)
     ])
-    print(f"[bg] wrote {bg} ({dur:.2f}s)")
+    print(f"[bg] wrote {bg} ({dur:.2f}s) color={color_hex}")
 
 if __name__ == "__main__":
     main()
