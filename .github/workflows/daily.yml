@@ -161,8 +161,11 @@ jobs:
 
       - name: Route beats → shots (Card-first + stock-aware)
         env:
-          FORCE_CARD: ${{ env.FORCE_CARD }}   # router_shots.py reads this; ensures Card visuals
-        run: python generator/route_shots.py --series "${{ matrix.series }}"
+          FORCE_CARD: ${{ env.FORCE_CARD }}
+          PYTHONPATH: ${{ github.workspace }}    # <— ensure top-level modules are importable
+        run: |
+          python generator/route_shots.py --series "${{ matrix.series }}"
+
 
       - name: Diagnose stock usage (after routing)
         run: |
