@@ -189,13 +189,13 @@ jobs:
           MP4=""
           if [ -n "$PLAN" ]; then
             MP4=$(python - <<'PY'
-import json,sys
-from pathlib import Path
-p=Path(sys.argv[1])
-plan=json.loads(p.read_text(encoding="utf-8"))
-print(plan.get("video_path",""))
-PY
-"$PLAN")
+            import json,sys
+            from pathlib import Path
+            p=Path(sys.argv[1])
+            plan=json.loads(p.read_text(encoding="utf-8"))
+            print(plan.get("video_path",""))
+            PY
+            "$PLAN")
           fi
           if [ -z "$MP4" ] || [ ! -f "$MP4" ]; then
             MP4=$(ls -t out/"$series"/final/*.mp4 | head -n1)
@@ -271,7 +271,7 @@ PY
           echo "Public URL: ${URL}"
 
       # --- Final sanity check on the actual file URL (HEAD must be 200 + content-type: video/*) ---
-      - name: HEAD check: wait until file is live
+      - name: HEAD check wait until file is live
         id: head
         run: |
           set -e
