@@ -164,6 +164,25 @@ jobs:
           FORCE_CARD: ${{ env.FORCE_CARD }}   # router_shots.py reads this; ensures Card visuals
         run: python generator/route_shots.py --series "${{ matrix.series }}"
 
+      - name: Diagnose stock usage (after routing)
+        run: |
+          set -e
+          series="${{ matrix.series }}"
+          echo "== stock dir listing =="
+          find assets/stock/"$series" -maxdepth 2 -type f -print 2>/dev/null || true
+          echo "== latest episode assets =="
+          EP_ASSETS="$(ls -d out/"$series"/ep_*/assets 2>/dev/null | sort -r | head -n1 || true)"
+          echo "EP_ASSETS=$EP_ASSETS"
+          if [ -n "$EP_ASSETS" ]; then
+            echo "-- stock_list.txt (if any) --"
+            [ -f "$EP_ASSETS/stock_list.txt" ] && cat "$EP_ASSETS/stock_list.txt" || echo "no stock_list.txt"
+            echo "-- shots --"
+            ls -lh "$EP_ASSETS/shots" || true
+            echo "-- ffprobe first shot --"
+            ffprobe -v error -show_streams -show_format "$EP_ASSETS/shots/000.mp4" || true
+          fi
+
+
       - name: Diagnose visuals & stock (readable logs)
         run: |
           set -e

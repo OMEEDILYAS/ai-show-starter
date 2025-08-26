@@ -1,8 +1,12 @@
 """
-Card adapter:
-- Always produces a structured visual over bg.mp4 (so you never get a flat color wash).
+Card adapter (robust + verbose):
+- Always produces a structured visual over bg.mp4.
 - If a stock/library clip exists, it is placed inside the card's video panel.
 - Title + bullets are rendered with safe default font.
+- Improvements:
+  * Recursively search stock_dir for common video extensions (.mp4/.MP4/.mov/.MOV)
+  * Case-insensitive filename keyword matching
+  * Clear logging: how many candidates found and which one was chosen
 """
 
 from __future__ import annotations
@@ -19,19 +23,35 @@ from typing import List, Optional
 FFMPEG = "ffmpeg"
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
+def _gather_candidates(stock_dir: Path) -> list[Path]:
+    """Return a list of candidate video files under stock_dir (recursive, common extensions)."""
+    if not stock_dir or not stock_dir.exists():
+        return []
+    patterns = [
+        str(stock_dir / "**/*.mp4"),
+        str(stock_dir / "**/*.MP4"),
+        str(stock_dir / "**/*.mov"),
+        str(stock_dir / "**/*.MOV"),
+    ]
+    files: list[Path] = []
+    for pat in patterns:
+        files.extend(Path(p) for p in glob.glob(pat, recursive=True))
+    # Deduplicate and sort for determinism
+    uniq = sorted({p.resolve() for p in files if p.is_file()})
+    return uniq
+
 def _pick_stock_clip(stock_dir: Path, keywords: List[str]) -> Optional[Path]:
     """
-    Choose a stock clip. Try to match any keyword in filename; else first found; else None.
+    Choose a stock clip. Try to match any keyword in filename (case-insensitive);
+    if no match, pick the first candidate. Log what we found for debugging.
     """
-    if not stock_dir.exists():
-        return None
-    candidates = sorted(Path(p) for p in glob.glob(str(stock_dir / "*.mp4")))
+    candidates = _gather_candidates(stock_dir)
     if not candidates:
+        print(f"[card] no stock candidates under: {stock_dir}")
         return None
 
-    # simple keyword match on filename
-    kw_norm = [k.lower() for k in keywords if isinstance(k, str)]
-    scored = []
+    kw_norm = [k.lower() for k in (keywords or []) if isinstance(k, str)]
+    scored: list[tuple[int, Path]] = []
     for p in candidates:
         name = p.name.lower()
         score = sum(1 for k in kw_norm if k and k in name)
@@ -39,15 +59,13 @@ def _pick_stock_clip(stock_dir: Path, keywords: List[str]) -> Optional[Path]:
     scored.sort(key=lambda x: (-x[0], x[1].name))
 
     best_score, best_path = scored[0]
-    if best_score > 0:
-        return best_path
-    # else: just pick the first (deterministic)
-    return candidates[0]
+    print(f"[card] stock_dir={stock_dir} candidates={len(candidates)} "
+          f"best_score={best_score} picked={best_path.name}")
+    return best_path
 
 def _safe_txt(s: str) -> str:
     # A minimal sanitization for ffmpeg textfiles
     s = s.replace("\r\n", "\n").replace("\r", "\n")
-    # Avoid weird control chars
     s = re.sub(r"[^\S\n]+", " ", s)
     return s.strip()
 
@@ -92,6 +110,8 @@ def render(
 
     # Inputs
     clip_path = stock_clip if stock_clip else bg_path
+    if stock_clip is None:
+        print("[card] WARNING: no stock matched; using bg as panel content.")
 
     # Layout constants (1080x1920 portrait)
     W, H = 1080, 1920
@@ -112,7 +132,7 @@ def render(
 
     # Text areas
     title_y = card_y + 40                  # 220
-    bullets_y = panel_y + panel_h + 120    # 1000-ish
+    bullets_y = panel_y + panel_h + 120    # ~1000
     title_size = 56
     bullet_size = 40
 
@@ -124,34 +144,20 @@ def render(
     bullets_file = _write_text_tmp(bullets_text)
 
     # Build filter graph
-    # 0: bg, 1: clip
-    # Steps:
-    #   [0:v] scale full -> [bg]
-    #   Draw shadow + border card on [bg]
-    #   [1:v] scale/crop/pad to panel_w x panel_h -> [clipf]
-    #   overlay [clipf] onto card
-    #   drawtext title + bullets
     scale_bg = f"scale={W}:{H},format=yuv420p"
-
     # Card shadow + border using layered drawbox
-    # Shadow
     shadow = f"drawbox=x={card_x+12}:y={card_y+16}:w={card_w}:h={card_h}:t=20:color=black@0.35"
-    # Card fill
-    fill =   f"drawbox=x={card_x}:y={card_y}:w={card_w}:h={card_h}:t=fill:color=white@0.06"
-    # Border
+    fill   = f"drawbox=x={card_x}:y={card_y}:w={card_w}:h={card_h}:t=fill:color=white@0.06"
     border = f"drawbox=x={card_x}:y={card_y}:w={card_w}:h={card_h}:t=6:color=white@0.7"
 
     # Clip fitting into panel (cover semantics)
-    # scale to cover, then crop to panel
     clip_fit = (
         f"scale=w={panel_w}:h={panel_h}:force_original_aspect_ratio=cover,"
         f"crop={panel_w}:{panel_h},setsar=1"
     )
 
-    # Overlay clip into bg-at-card
     overlay_clip = f"overlay=x={panel_x}:y={panel_y}:format=auto"
 
-    # Text overlays
     title_draw = (
         f"drawtext=fontfile='{FONT}':textfile='{title_file}':"
         f"fontcolor=white:fontsize={title_size}:x=(w-text_w)/2:y={title_y}:"
@@ -171,7 +177,6 @@ def render(
         f"[v2]{bullets_draw}[vout]"
     )
 
-    # Build ffmpeg command
     cmd = [
         FFMPEG, "-y",
         "-i", str(bg_path),
@@ -191,7 +196,6 @@ def render(
     try:
         _run(cmd)
     finally:
-        # cleanup temp text files
         try:
             title_file.unlink(missing_ok=True)
         except Exception:
