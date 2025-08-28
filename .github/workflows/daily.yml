@@ -187,30 +187,34 @@ jobs:
       # ---------- Publish to gh-pages (robust push) ----------
       - name: Publish MP4 to gh-pages
         id: publish
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # auto-provided token
         run: |
-          set -e
+          set -euo pipefail
+
           series="${{ matrix.series }}"
           FILE="${{ steps.meta.outputs.mp4 }}"
           NAME="${series}-${{ github.run_id }}.mp4"
+
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          # Checkout gh-pages in site/
+
+          # Clone with token (so push is authenticated)
           if [ ! -d site ]; then
-            git clone --depth=1 --branch gh-pages "https://github.com/${{ github.repository }}.git" site
+            git clone --depth=1 --branch gh-pages \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" site
           fi
-          mkdir -p site/reels/"$series"
+
+          mkdir -p "site/reels/$series"
           cp "$FILE" "site/reels/$series/$NAME"
+
           cd site
           git add "reels/$series/$NAME"
           git commit -m "reel: $NAME ($series) from run ${{ github.run_id }}" || true
-          for i in 1 2 3 4 5; do
-            git pull --rebase origin gh-pages || true
-            if git push origin HEAD:gh-pages; then
-              break
-            fi
-            echo "Push failed (attempt $i). Retrying…"; sleep 2
-            if [ "$i" = "5" ]; then echo "Push failed after retries"; exit 1; fi
-          done
+          # Rebase + push with token-backed remote
+          git pull --rebase origin gh-pages || true
+          git push origin HEAD:gh-pages
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
       - name: Compute public URL
