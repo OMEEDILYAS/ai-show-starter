@@ -70,20 +70,20 @@ def main():
         "caption": caption,
         "access_token": token,
     }
-    resp = requests.post(f"{GRAPH}/{ig_user}/media", data=payload, timeout=60).json()
+    resp = requests.post(f"{GRAPH}/{ig_user}/media", data=payload, timeout=200).json()
     print("[resp:create]", resp)
     creation_id = resp.get("id")
     if not creation_id:
         die("[create] failed: " + str(resp))
 
     # 2) poll until FINISHED
-    if not wait_until_ready(creation_id, token, timeout=240):
+    if not wait_until_ready(creation_id, token, timeout=340):
         die("container not ready; aborting.", code=3)
 
     # 3) publish
     pub = requests.post(f"{GRAPH}/{ig_user}/media_publish",
                         data={"creation_id": creation_id, "access_token": token},
-                        timeout=60).json()
+                        timeout=200).json()
     print("[resp:publish]", pub)
     if "id" not in pub:
         die("[publish] failed: " + str(pub))
