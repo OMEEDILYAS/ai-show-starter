@@ -137,25 +137,45 @@ jobs:
       - name: Resolve final mp4 & caption (bash + jq)
         id: meta
         run: |
-          set -e
-          sudo apt-get install -y jq > /dev/null
+          set -euo pipefail
+          sudo apt-get update -y >/dev/null
+          sudo apt-get install -y jq >/dev/null
+
           series="${{ matrix.series }}"
-          PLAN="$(ls -t out/${series}/ep_*/plan.json 2>/dev/null | head -n1 || true)"
+
+          # Find latest plan.json (if any)
+          PLAN="$(ls -t out/"$series"/ep_*/plan.json 2>/dev/null | head -n1 || true)"
           MP4=""
+
+          # Prefer video_path recorded in plan.json
           if [ -n "$PLAN" ]; then
             MP4="$(jq -r '.video_path // ""' "$PLAN")"
           fi
+
+          # Fallback: newest mp4 under out/<series>/final/
           if [ -z "$MP4" ] || [ ! -f "$MP4" ]; then
-            MP4="$(ls -t out/${series}/final/"*.mp4 2>/dev/null | head -n1 || true)"
+            MP4="$(ls -t out/"$series"/final/*.mp4 2>/dev/null | head -n1 || true)"
+            #                    ^^^^^^^  <-- no inner quotes around the glob
           fi
+
           if [ -z "$MP4" ]; then
-            echo "No final mp4 found" >&2; exit 1
+            echo "No final mp4 found" >&2
+            exit 1
           fi
+
           FILE_BASENAME="$(basename "$MP4")"
-          EP="$(dirname "$PLAN")"
-          TITLE="$(cat "$EP/assets/title.txt" 2>/dev/null || echo "${series} Daily")"
-          OVERLAY="$(cat "$EP/assets/overlay.txt" 2>/dev/null || echo "New episode!")"
+
+          # Determine the episode dir for captions (works even if PLAN is empty)
+          if [ -n "$PLAN" ]; then
+            EP_DIR="$(dirname "$PLAN")"
+          else
+            EP_DIR="$(dirname "$(dirname "$MP4")")"
+          fi
+
+          TITLE="$(cat "$EP_DIR/assets/title.txt" 2>/dev/null || echo "${series} Daily")"
+          OVERLAY="$(cat "$EP_DIR/assets/overlay.txt" 2>/dev/null || echo "New episode!")"
           CAPTION="${TITLE} — ${OVERLAY}"
+
           {
             echo "mp4=$MP4"
             echo "file=$FILE_BASENAME"
