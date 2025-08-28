@@ -1,90 +1,94 @@
 # publisher/post_instagram.py
-import os, sys, time, json
-import requests
+import os, sys, time, requests
 
 GRAPH = "https://graph.facebook.com/v19.0"
 
-def env_required(key: str) -> str:
-    v = os.environ.get(key, "").strip()
-    if not v:
-        print(f"[ERROR] missing env: {key}", file=sys.stderr)
-        sys.exit(2)
-    return v
-
-def die(msg: str, data=None, code=1):
-    print(f"[ERROR] {msg}", file=sys.stderr)
-    if data is not None:
-        try:
-            print(json.dumps(data, indent=2))
-        except Exception:
-            print(str(data))
+def die(msg, code=2):
+    print(msg)
     sys.exit(code)
 
+def preflight(url: str, max_wait=60):
+    """Wait until IG can fetch the mp4 URL (HEAD returns 200 and video content)."""
+    t0 = time.time()
+    while time.time() - t0 < max_wait:
+        try:
+            r = requests.head(url, timeout=10, allow_redirects=True)
+            ct = r.headers.get("content-type","")
+            print(f"[preflight:HEAD] {r.status_code} {ct} {r.headers.get('content-length','')}")
+            if r.status_code == 200 and "video" in ct:
+                return True
+        except requests.RequestException:
+            pass
+        time.sleep(2)
+    return False
+
+def wait_until_ready(creation_id: str, token: str, timeout=180):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        r = requests.get(f"{GRAPH}/{creation_id}", params={"fields":"status_code","access_token":token}, timeout=20)
+        js = r.json()
+        if "status_code" in js and js["status_code"] == "FINISHED":
+            print("[poll] ready:", js)
+            return True
+        if "error" in js:
+            print("[poll]", js)
+        else:
+            print("[poll] processing:", js)
+        time.sleep(3)
+    print("[poll] timeout waiting for FINISHED")
+    return False
+
 def main():
-    if len(sys.argv) != 3:
-        print("usage: post_instagram.py <video_url_or_path> <caption>", file=sys.stderr)
-        sys.exit(2)
-    src, caption = sys.argv[1], sys.argv[2]
+    if len(sys.argv) < 3:
+        die("usage: post_instagram.py <video_url> <caption>")
 
-    token = env_required("IG_ACCESS_TOKEN")
-    ig_user = env_required("IG_USER_ID")
+    url = sys.argv[1]
+    caption = sys.argv[2]
 
-    # sanity: who am I?
-    me = requests.get(f"{GRAPH}/me", params={"access_token": token}, timeout=30).json()
-    print("[whoami]", me)
+    token = os.getenv("IG_ACCESS_TOKEN")
+    ig_user = os.getenv("IG_USER_ID")
+    if not token or not ig_user:
+        die("[config] IG_ACCESS_TOKEN and IG_USER_ID are required")
 
-    # Create container (by URL or file)
-    params = {
+    print("[info] media_url:", url)
+    print("[info] caption:", caption)
+
+    if not preflight(url, max_wait=90):
+        die("[preflight] URL not yet fetchable by IG; aborting.")
+
+    # whoami (optional)
+    try:
+        me = requests.get(f"{GRAPH}/me", params={"access_token": token}, timeout=30).json()
+        print("[whoami]", {k: me.get(k) for k in ("name","id") if k in me})
+    except Exception:
+        pass
+
+    # 1) create container
+    payload = {
+        "media_type": "REELS",   # optional but harmless; IG can infer from video_url
+        "video_url": url,
         "caption": caption,
-        "media_type": "REELS",
-        "share_to_feed": "true",
         "access_token": token,
     }
-    files = None
-    if src.startswith("http://") or src.startswith("https://"):
-        params["video_url"] = src
-    else:
-        if not os.path.isfile(src):
-            die(f"file not found: {src}")
-        files = {"video_file": open(src, "rb")}
-
-    print("[step] create container…")
-    r = requests.post(f"{GRAPH}/{ig_user}/media", params=None if files else params, data=None if files else None,
-                      files=files, timeout=600)
-    if files:
-        files["video_file"].close()
-    create = r.json()
-    print("[resp:create]", create)
-    creation_id = create.get("id")
+    resp = requests.post(f"{GRAPH}/{ig_user}/media", data=payload, timeout=200).json()
+    print("[resp:create]", resp)
+    creation_id = resp.get("id")
     if not creation_id:
-        die("no creation id from /media", create)
+        die("[create] failed: " + str(resp))
 
-    # Poll status
-    print("[step] wait until ready…")
-    for i in range(1, 31):
-        time.sleep(5)
-        status = requests.get(f"{GRAPH}/{creation_id}",
-                              params={"fields":"status_code", "access_token": token},
-                              timeout=30).json()
-        print(f"[poll {i}] {status}")
-        sc = (status or {}).get("status_code")
-        if sc == "FINISHED":
-            break
-        if sc == "ERROR":
-            die("container status ERROR", status, code=3)
-    else:
-        die("container never reached FINISHED", status, code=3)
+    # 2) poll until FINISHED
+    if not wait_until_ready(creation_id, token, timeout=340):
+        die("container not ready; aborting.", code=3)
 
-    # Publish
-    print("[step] publish…")
+    # 3) publish
     pub = requests.post(f"{GRAPH}/{ig_user}/media_publish",
                         data={"creation_id": creation_id, "access_token": token},
-                        timeout=60).json()
+                        timeout=200).json()
     print("[resp:publish]", pub)
     if "id" not in pub:
-        die("publish failed", pub, code=4)
+        die("[publish] failed: " + str(pub))
 
-    print("[OK] published reel id:", pub["id"])
+    print("[ok] posted:", pub["id"])
 
 if __name__ == "__main__":
     main()

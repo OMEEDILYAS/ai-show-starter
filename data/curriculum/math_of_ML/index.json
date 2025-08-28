@@ -1,0 +1,18 @@
+{
+  "book_slug": "math_of_ML",
+  "title": "Mathematics for Machine Learning",
+  "page_offset": -16,
+  "chapters": [
+    { "num": 2,  "title": "Linear Algebra",                                        "start_page": 17,  "sections": [] },
+    { "num": 3,  "title": "Analytic Geometry",                                     "start_page": 70,  "sections": [] },
+    { "num": 4,  "title": "Matrix Decompositions",                                 "start_page": 98,  "sections": [] },
+    { "num": 5,  "title": "Vector Calculus",                                       "start_page": 139, "sections": [] },
+    { "num": 6,  "title": "Probability and Distributions",                         "start_page": 172, "sections": [] },
+    { "num": 7,  "title": "Continuous Optimization",                               "start_page": 225, "sections": [] },
+    { "num": 8,  "title": "When Models Meet Data",                                 "start_page": 251, "sections": [] },
+    { "num": 9,  "title": "Linear Regression",                                     "start_page": 289, "sections": [] },
+    { "num": 10, "title": "Dimensionality Reduction with Principal Components",    "start_page": 317, "sections": [] },
+    { "num": 11, "title": "Density Estimation with Gaussian Mixture Models",       "start_page": 348, "sections": [] },
+    { "num": 12, "title": "Classification with Support Vector Machines",           "start_page": 370, "sections": [] }
+  ]
+}

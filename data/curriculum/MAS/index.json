@@ -1,0 +1,21 @@
+{
+  "book_slug": "MAS",
+  "title": "Multiagent Systems",
+  "page_offset": 0,
+  "chapters": [
+    { "num": 1,  "title": "Distributed Constraint Satisfaction",                   "start_page": 1,   "sections": [] },
+    { "num": 2,  "title": "Distributed Optimization",                               "start_page": 19,  "sections": [] },
+    { "num": 3,  "title": "Introduction to Noncooperative Game Theory",             "start_page": 47,  "sections": [] },
+    { "num": 4,  "title": "Computing Solution Concepts of Games",                   "start_page": 89,  "sections": [] },
+    { "num": 5,  "title": "Games with Sequential Actions",                          "start_page": 117, "sections": [] },
+    { "num": 6,  "title": "Richer Representations: Beyond the Normal Form",        "start_page": 147, "sections": [] },
+    { "num": 7,  "title": "Learning and Teaching",                                  "start_page": 199, "sections": [] },
+    { "num": 8,  "title": "Communication",                                          "start_page": 235, "sections": [] },
+    { "num": 9,  "title": "Aggregating Preferences: Social Choice",                 "start_page": 253, "sections": [] },
+    { "num": 10, "title": "Protocols for Strategic Agents",                         "start_page": 273, "sections": [] },
+    { "num": 11, "title": "Protocols for Multiagent Resource Allocation",           "start_page": 329, "sections": [] },
+    { "num": 12, "title": "Teams of Selfish Agents: An Overview",                   "start_page": 383, "sections": [] },
+    { "num": 13, "title": "Logics of Knowledge and Belief",                         "start_page": 409, "sections": [] },
+    { "num": 14, "title": "Beyond Belief: Probability and Dynamics",                "start_page": 437, "sections": [] }
+  ]
+}

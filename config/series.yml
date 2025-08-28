@@ -1,0 +1,21 @@
+# config/series.yml
+# PURPOSE: Declare all series the pipeline supports and how to resolve them to a book/curriculum.
+# - "math_of_ML": real post to Instagram
+# - "MAS": dry run only
+# - "mixed": uniform-random pick of one of the real series (no IG post for now)
+
+series:
+  math_of_ML:
+    book_slug: math_of_ML          # maps to data/curriculum/math_of_ML/...
+    post_to_instagram: true        # only this one posts for real
+
+  MAS:
+    book_slug: MAS                 # maps to data/curriculum/MAS/...
+    post_to_instagram: false       # dry run
+
+  mixed:
+    book_slug: mixed               # special: we'll pick from the "options" list below
+    post_to_instagram: false       # dry run
+    options:                       # candidates to pick uniformly at random
+      - math_of_ML
+      - MAS

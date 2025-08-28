@@ -1,8 +1,10 @@
 name: daily-episodes
+
 on:
   schedule:
-    - cron: "0 15 * * *"
+    - cron: "0 15 * * *"     # daily at 15:00 UTC (10:00 America/Chicago)
   workflow_dispatch:
+
 permissions:
   contents: write
 
@@ -12,15 +14,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        series: [ai_teacher, ai_drama, ai_memes]
+        # Three channels: math_of_ML (real post), MAS (dry), mixed (dry)
+        series: [math_of_ML, MAS, mixed]
+
     concurrency:
       group: daily-${{ matrix.series }}
       cancel-in-progress: false
-    timeout-minutes: 40
+    timeout-minutes: 45
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: ${{ github.workspace }}   # so adapters import cleanly
+      BG_COLOR: "0x101426"
 
     steps:
       - uses: actions/checkout@v4
 
+      # --- System deps for visuals ---
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg graphviz fonts-dejavu-core
+
+      # --- Python setup ---
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -32,227 +48,225 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('infra/requirements.txt') }}
           restore-keys: ${{ runner.os }}-pip-
 
-      - name: Install deps
-        run: pip install -r infra/requirements.txt
-
-      - name: Install FFmpeg & fonts
+      # --- Vendor wheels (Option A) OR fallback to pip ---
+      - name: Install Python deps (prefer vendor wheels)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
-
-      # ----------------- PULL STOCK CACHE FROM gh-pages -----------------
-      - name: Checkout gh-pages into site/
-        uses: actions/checkout@v4
-        with:
-          ref: gh-pages
-          path: site
-
-      - name: Seed local stock library from cache
-        run: |
-          mkdir -p assets/stock/${{ matrix.series }}
-          if [ -d "site/stock/${{ matrix.series }}" ]; then
-            rsync -a "site/stock/${{ matrix.series }}/" "assets/stock/${{ matrix.series }}/" || true
+          set -e
+          if ls vendor/wheels/*.whl 1>/dev/null 2>&1; then
+            echo "[deps] Installing vendor wheels…"
+            pip install vendor/wheels/*.whl
           fi
-          if [ -d "site/stock/common" ]; then
-            mkdir -p assets/stock/common
-            rsync -a "site/stock/common/" "assets/stock/common/" || true
-          fi
+          # Ensure core deps present even without vendor wheels
+          pip install --upgrade pip
+          pip install numpy pillow
+          pip install matplotlib networkx graphviz pyyaml pandas requests openai
 
-      # ----------------- CURRICULUM & PLANNING -----------------
-      - name: Stage curriculum (placeholder ok)
+      # ----------------- PIPELINE -----------------
+
+      - name: Plan episode (cursor + curriculum)
         env:
           SERIES: ${{ matrix.series }}
-        run: python curriculum/extract_unit.py --series "$SERIES"
+        run: |
+          python planner/plan_next.py --series "${SERIES}"
 
-      - name: Plan episode
-        env:
-          SERIES: ${{ matrix.series }}
-        run: python planner/plan_next.py --series "$SERIES"
-
-      - name: Director Agent
+      - name: Director agent (strict summary)
         env:
           SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: gpt-4o
-        run: python planner/agent_director.py --series "$SERIES"
-
-      # ----------------- FETCH NEW STOCK VIA APIs -----------------
-      - name: Fetch stock clips (Pexels/Pixabay)
-        env:
-          SERIES: ${{ matrix.series }}
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: python generator/fetch_stock.py --series "$SERIES" --max_new 4 --per_query 8
-
-      # Push any newly fetched clips to gh-pages cache for future runs
-      - name: Push new stock to gh-pages cache
         run: |
-          set -e
-          mkdir -p site/stock/${{ matrix.series }}
-          shopt -s nullglob
-          newfiles=(assets/stock/${{ matrix.series }}/*.mp4)
-          if [ ${#newfiles[@]} -gt 0 ]; then
-            cp -n assets/stock/${{ matrix.series }}/*.mp4 site/stock/${{ matrix.series }}/ || true
-          fi
-          # (optional common dir)
-          if [ -d assets/stock/common ]; then
-            mkdir -p site/stock/common
-            cp -n assets/stock/common/*.mp4 site/stock/common/ 2>/dev/null || true
-          fi
+          python planner/agent_director.py --series "${SERIES}"
 
-          cd site
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "stock/${{ matrix.series }}" "stock/common" || true
-          git commit -m "stock cache update (${{ matrix.series }}) from run ${{ github.run_id }}" || echo "nothing to commit"
-          git push origin HEAD:gh-pages
-
-      # ----------------- GENERATE CORE ASSETS -----------------
-      - name: Generate assets (OpenAI TTS)
+      - name: Generate assets (TTS, texts)
         env:
           SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_TTS_MODEL: gpt-4o-mini-tts
           OPENAI_TTS_VOICE: verse
-        run: python generator/gen_assets.py --series "$SERIES"
-
-      - name: Generate fallback background (animated color)
-        env:
-          SERIES: ${{ matrix.series }}
-        run: python generator/gen_background.py --series "$SERIES"
-
-      - name: Select stock clips (from library)
-        env:
-          SERIES: ${{ matrix.series }}
-        run: python generator/select_stock.py --series "$SERIES" --max_clips 6
-
-      - name: Cut visuals from stock (to narration length)
-        env:
-          SERIES: ${{ matrix.series }}
-        run: python assembly/cut_visuals.py --series "$SERIES"
-      
-      - name: Debug visuals existence
         run: |
-          ls -l out/${{ matrix.series }}/ep_*/assets/visuals.mp4 || echo "no visuals.mp4"
+          python generator/gen_assets.py --series "${SERIES}"
 
-      - name: Make captions (SRT)
+      - name: Generate background (calm color)
+        env:
+          SERIES: ${{ matrix.series }}
+          BG_COLOR: ${{ env.BG_COLOR }}
+        run: |
+          python generator/gen_background.py --series "${SERIES}"
+
+      - name: Make shotlist (adaptive beats)
         env:
           SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: python generator/make_srt.py --series "$SERIES"
+          OPENAI_MODEL: gpt-4o
+        run: |
+          python planner/make_shotlist.py --series "${SERIES}"
 
-      - name: Assemble video (prefers visuals.mp4)
+      - name: Route beats → topic adapters (no stock)
         env:
           SERIES: ${{ matrix.series }}
-        run: python assembly/build_video.py --series "$SERIES"
+          PYTHONPATH: ${{ env.PYTHONPATH }}
+        run: |
+          python generator/route_shots.py --series "${SERIES}"
 
-      - name: Validate video
+      - name: Cut visuals to narration length
         env:
           SERIES: ${{ matrix.series }}
-        run: python assembly/validate_video.py --series "$SERIES"
-
-      - name: Debug list outputs
-        if: always()
         run: |
-          echo "Tree for series=${{ matrix.series }}:"
-          find out/${{ matrix.series }} -maxdepth 3 -type f -print || true
+          python assembly/cut_visuals.py --series "${SERIES}"
 
-      # ----------------- FIND & PUBLISH -----------------
-      - name: Resolve MP4 from plan.json
-        id: mp4
+      - name: Make subtitles (SRT)
+        env:
+          SERIES: ${{ matrix.series }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
+          python generator/make_srt.py --series "${SERIES}"
 
-          series = "${{ matrix.series }}"
-          outdir = Path("out") / series
+      - name: Assemble final video (titles/overlay/subs)
+        env:
+          SERIES: ${{ matrix.series }}
+        run: |
+          python assembly/build_video.py --series "${SERIES}"
 
-          found = False
-          path = ""
+      - name: Validate final video
+        env:
+          SERIES: ${{ matrix.series }}
+        run: |
+          python assembly/validate_video.py --series "${SERIES}"
 
-          plans = sorted(outdir.glob("ep_*/plan.json"))
-          if plans:
-            plan = json.loads(plans[-1].read_text(encoding="utf-8"))
-            vid = plan.get("video_path", "")
-            if vid and Path(vid).exists():
-              found = True
-              path = vid
+      # ---------- Resolve MP4 & caption ----------
+      - name: Resolve final mp4 & caption (bash + jq)
+        id: meta
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y >/dev/null
+          sudo apt-get install -y jq >/dev/null
 
-          if not found:
-            finals = sorted((outdir / "final").glob("*.mp4"))
-            if finals:
-              found = True
-              path = str(finals[-1])
+          series="${{ matrix.series }}"
 
-          # set real step outputs
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            f.write(f"found={'true' if found else 'false'}\n")
-            if found:
-              f.write(f"file={path}\n")
+          # Find latest plan.json (if any)
+          PLAN="$(ls -t out/"$series"/ep_*/plan.json 2>/dev/null | head -n1 || true)"
+          MP4=""
 
-          # also echo for logs
-          print(f"found={'true' if found else 'false'}")
-          if found:
-            print(f"file={path}")
-          PY
+          # Prefer video_path recorded in plan.json
+          if [ -n "$PLAN" ]; then
+            MP4="$(jq -r '.video_path // ""' "$PLAN")"
+          fi
 
+          # Fallback: newest mp4 under out/<series>/final/
+          if [ -z "$MP4" ] || [ ! -f "$MP4" ]; then
+            MP4="$(ls -t out/"$series"/final/*.mp4 2>/dev/null | head -n1 || true)"
+            #                    ^^^^^^^  <-- no inner quotes around the glob
+          fi
+
+          if [ -z "$MP4" ]; then
+            echo "No final mp4 found" >&2
+            exit 1
+          fi
+
+          FILE_BASENAME="$(basename "$MP4")"
+
+          # Determine the episode dir for captions (works even if PLAN is empty)
+          if [ -n "$PLAN" ]; then
+            EP_DIR="$(dirname "$PLAN")"
+          else
+            EP_DIR="$(dirname "$(dirname "$MP4")")"
+          fi
+
+          TITLE="$(cat "$EP_DIR/assets/title.txt" 2>/dev/null || echo "${series} Daily")"
+          OVERLAY="$(cat "$EP_DIR/assets/overlay.txt" 2>/dev/null || echo "New episode!")"
+          CAPTION="${TITLE} — ${OVERLAY}"
+
+          {
+            echo "mp4=$MP4"
+            echo "file=$FILE_BASENAME"
+            echo "caption<<EOF"
+            echo "$CAPTION"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # ---------- Publish to gh-pages (robust push) ----------
       - name: Publish MP4 to gh-pages
-        id: publish_url
-        if: ${{ steps.mp4.outputs.found == 'true' && steps.vis.outputs.skip != 'true' && !cancelled() }}
+        id: publish
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # auto-provided token
         run: |
-          set -e
-          FILE="${{ steps.mp4.outputs.file }}"
-          # Make a unique, cache-busting name per run (series-runId.mp4)
-          NAME="${{ matrix.series }}-${{ github.run_id }}.mp4"
+          set -euo pipefail
 
-          mkdir -p site/reels/${{ matrix.series }}
-          cp "$FILE" "site/reels/${{ matrix.series }}/$NAME"
+          series="${{ matrix.series }}"
+          FILE="${{ steps.meta.outputs.mp4 }}"
+          NAME="${series}-${{ github.run_id }}.mp4"
+
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Clone with token (so push is authenticated)
+          if [ ! -d site ]; then
+            git clone --depth=1 --branch gh-pages \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" site
+          fi
+
+          mkdir -p "site/reels/$series"
+          cp "$FILE" "site/reels/$series/$NAME"
 
           cd site
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "reels/${{ matrix.series }}/$NAME"
-          git commit -m "reel: $NAME (${{ matrix.series }}) from run ${{ github.run_id }}" || true
-
-          # Avoid non-fast-forward errors if multiple jobs push gh-pages:
+          git add "reels/$series/$NAME"
+          git commit -m "reel: $NAME ($series) from run ${{ github.run_id }}" || true
+          # Rebase + push with token-backed remote
           git pull --rebase origin gh-pages || true
-          git push
+          git push origin HEAD:gh-pages
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
-          echo "url=https://omeedilyas.github.io/ai-show-starter/reels/${{ matrix.series }}/$NAME" >> "$GITHUB_OUTPUT"
-
-
-      # ---- Real Instagram only for ai_teacher (keep others dry) ----
-      - name: Echo reel URL (ai_teacher)
-        if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
+      - name: Compute public URL
+        id: url
         run: |
-          echo "Posting URL: ${{ steps.publish_url.outputs.url }}"
+          OWNER="${GITHUB_REPOSITORY_OWNER}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          FILE="${{ steps.publish.outputs.name }}"
+          BASE="https://${OWNER}.github.io/${REPO}"
+          URL="${BASE}/reels/${{ matrix.series }}/${FILE}"
+          echo "url=${URL}" >> $GITHUB_OUTPUT
+          echo "Public URL: ${URL}"
 
-      - name: Post to Instagram (ai_teacher) — REAL
-        if: ${{ matrix.series == 'ai_teacher' && steps.mp4.outputs.found == 'true' && steps.publish_url.outputs.url != '' && !cancelled() }}
+      - name: Wait for file to be live
+        id: head
+        run: |
+          set -e
+          URL="${{ steps.url.outputs.url }}"
+          for i in {1..90}; do
+            code=$(curl -sI -o /dev/null -w "%{http_code}" "$URL" || true)
+            ctype=$(curl -sI "$URL" | awk -F': ' 'tolower($1)=="content-type"{print tolower($2)}' | tr -d '\r' || true)
+            echo "[try $i] code=$code ctype=$ctype"
+            if [ "$code" = "200" ] && [[ "$ctype" == video/* ]]; then
+              echo "live=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "live=false" >> $GITHUB_OUTPUT
+          exit 0
+
+      # ---------- Instagram rules ----------
+      - name: Post to Instagram — REAL (math_of_ML only)
+        if: ${{ matrix.series == 'math_of_ML' && steps.head.outputs.live == 'true' }}
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: |
-          set -euo pipefail
-          python -u publisher/post_instagram.py "${{ steps.publish_url.outputs.url }}" "Daily episode 🚀 #ai #reels #${{ matrix.series }}"
+          URL="${{ steps.url.outputs.url }}"
+          CAP="${{ steps.meta.outputs.caption }}"
+          echo "Posting (REAL) for math_of_ML: $URL"
+          python publisher/post_instagram.py "$URL" "$CAP"
 
-      # ---- Keep aggregator as DRY marker ----
-      - name: Publish (DRY RUN aggregate)
-        if: ${{ !cancelled() }}
-        env:
-          SERIES: ${{ matrix.series }}
-          DRY_RUN: "true"
-          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
-        run: python publisher/post_all.py --series "$SERIES"
+      - name: Post to Instagram — DRY RUN (MAS, mixed)
+        if: ${{ matrix.series != 'math_of_ML' && steps.head.outputs.live == 'true' }}
+        run: |
+          echo "[DRY] Would post URL: ${{ steps.url.outputs.url }}"
+          echo "[DRY] CAPTION: ${{ steps.meta.outputs.caption }}"
 
-      - name: Upload artifact
+      - name: Upload final mp4 artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.series }}-output
+          name: ${{ matrix.series }}-final
           path: out/${{ matrix.series }}/final/*.mp4
-
-      - name: Collect analytics (non-blocking)
-        if: always()
-        run: python analytics/pull_metrics.py --series "$SERIES" || true

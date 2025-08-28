@@ -56,6 +56,12 @@ def main():
         v_input = str(bg)
     else:
         v_input = "lavfi:color=size=1080x1920:rate=30:color=black"
+    
+    # … after you define paths like:
+    visuals = assets / "visuals.mp4"
+    bg = assets / "bg.mp4"
+    src = visuals if visuals.exists() else bg
+    print(f"[assembly] using source: {src}")
 
     # Load texts
     overlay = overlay_txt.read_text(encoding="utf-8").strip() if overlay_txt.exists() else ""
