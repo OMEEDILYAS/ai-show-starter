@@ -1,5 +1,6 @@
 name: build-linux-wheels
-on: { workflow_dispatch: {} }
+on:
+  workflow_dispatch:  # run manually
 
 jobs:
   wheels:
