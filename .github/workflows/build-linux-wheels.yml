@@ -1,0 +1,24 @@
+name: build-linux-wheels
+on: { workflow_dispatch: {} }
+
+jobs:
+  wheels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Build/download manylinux wheels
+        run: |
+          python -m pip install --upgrade pip wheel
+          mkdir -p vendor/wheels
+          # Download prebuilt manylinux wheels (no building from source)
+          pip download --only-binary=:all: --dest vendor/wheels \
+            numpy pillow matplotlib networkx graphviz
+          echo "Contents of vendor/wheels:"
+          ls -al vendor/wheels
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: vendor-wheels-linux
+          path: vendor/wheels/*.whl

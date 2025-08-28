@@ -1,20 +1,12 @@
-# ------------------------------
-# Daily multi-series episode run
-# Builds episodes, publishes the final MP4 to gh-pages,
-# waits for GitHub Pages to finish building, then:
-#   - Posts to Instagram for ai_teacher (REAL)
-#   - Dry-runs for other series (NO post)
-# ------------------------------
-
 name: daily-episodes
 
 on:
   schedule:
-    - cron: "0 15 * * *"   # run daily at 15:00 UTC (10:00 America/Chicago)
-  workflow_dispatch:        # allow manual runs
+    - cron: "0 15 * * *"     # daily at 15:00 UTC (10:00 America/Chicago)
+  workflow_dispatch:
 
 permissions:
-  contents: write           # needed to push to gh-pages
+  contents: write
 
 jobs:
   episode:
@@ -22,24 +14,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # We still render all three, but only ai_teacher will post to IG.
-        series: [ai_teacher, ai_drama, ai_memes]
+        # Three channels: math_of_ML (real post), MAS (dry), mixed (dry)
+        series: [math_of_ML, MAS, mixed]
 
     concurrency:
       group: daily-${{ matrix.series }}
       cancel-in-progress: false
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     env:
-      # Calm, readable fallback background (used by gen_background.py)
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: ${{ github.workspace }}   # so adapters import cleanly
       BG_COLOR: "0x101426"
-      # Force Card adapter everywhere for watchable visuals (route_shots.py reads this)
-      FORCE_CARD: "1"
 
     steps:
-      # --- Repo checkout & tooling setup ---
       - uses: actions/checkout@v4
 
+      # --- System deps for visuals ---
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg graphviz fonts-dejavu-core
+
+      # --- Python setup ---
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -51,224 +48,114 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('infra/requirements.txt') }}
           restore-keys: ${{ runner.os }}-pip-
 
-      - name: Install Python deps
-        # If you maintain infra/requirements.txt, we use it; otherwise install minimal deps.
+      # --- Vendor wheels (Option A) OR fallback to pip ---
+      - name: Install Python deps (prefer vendor wheels)
         run: |
-          if [ -f infra/requirements.txt ]; then
-            pip install -r infra/requirements.txt
-          else
-            pip install requests pyyaml pandas openai
+          set -e
+          if ls vendor/wheels/*.whl 1>/dev/null 2>&1; then
+            echo "[deps] Installing vendor wheels…"
+            pip install vendor/wheels/*.whl
           fi
+          # Ensure core deps present even without vendor wheels
+          pip install --upgrade pip
+          pip install numpy pillow
+          pip install matplotlib networkx graphviz
 
-      - name: Install FFmpeg & fonts
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
-          ffmpeg -version
-          ffprobe -version || true
+      # ----------------- PIPELINE -----------------
 
-      # --- Pull cached stock from gh-pages into local repo (so visuals have motion even w/o new fetch) ---
-      - name: Checkout gh-pages into site/
-        uses: actions/checkout@v4
-        with:
-          ref: gh-pages
-          path: site
-
-      - name: Seed local stock library from cache
-        run: |
-          mkdir -p assets/stock/${{ matrix.series }}
-          if [ -d "site/stock/${{ matrix.series }}" ]; then
-            rsync -a "site/stock/${{ matrix.series }}/" "assets/stock/${{ matrix.series }}/" || true
-          fi
-          if [ -d "site/stock/common" ]; then
-            mkdir -p assets/stock/common
-            rsync -a "site/stock/common/" "assets/stock/common/" || true
-          fi
-
-      # --- (Optional) Generate 2–3 simple placeholder stock loops so router never goes blank ---
-      - name: Generate placeholder stock (safety net)
-        run: |
-          mkdir -p assets/stock/ai_teacher
-          ffmpeg -y -f lavfi -i "color=c=#202a44:s=1080x1920:d=5" \
-            -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='Vectors':fontsize=96:fontcolor=white:x=w/2-200+50*t:y=h/2-60" \
-            assets/stock/ai_teacher/vectors.mp4
-          ffmpeg -y -f lavfi -i "color=c=#2a4433:s=1080x1920:d=5" \
-            -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='Patterns':fontsize=80:fontcolor=white:x=w/2-250-40*t:y=h/2" \
-            assets/stock/ai_teacher/patterns.mp4 || true
-
-      # --- Plan & write the episode copy (title/overlay/narration) ---
-      - name: Plan episode
-        run: python planner/plan_next.py --series "${{ matrix.series }}"
-
-      - name: Director agent (title/overlay/narration)
+      - name: Plan episode (cursor + curriculum)
         env:
+          SERIES: ${{ matrix.series }}
+        run: |
+          python planner/plan_next.py --series "${SERIES}"
+
+      - name: Director agent (strict summary)
+        env:
+          SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: gpt-4o
-        run: python planner/agent_director.py --series "${{ matrix.series }}"
+        run: |
+          python planner/agent_director.py --series "${SERIES}"
 
-      - name: Generate assets (voice.wav, title/overlay/narration files)
+      - name: Generate assets (TTS, texts)
         env:
+          SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_TTS_MODEL: gpt-4o-mini-tts
           OPENAI_TTS_VOICE: verse
-        run: python generator/gen_assets.py --series "${{ matrix.series }}"
-
-      # --- Fetch & select stock BEFORE routing (so router sees assets/stock_list.txt) ---
-      - name: Fetch stock clips (Pexels/Pixabay)
-        if: ${{ env.PEXELS_API_KEY != '' || env.PIXABAY_API_KEY != '' }}
-        env:
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: |
-          python generator/fetch_stock.py --series "${{ matrix.series }}" --max_new 6 --per_query 8
+          python generator/gen_assets.py --series "${SERIES}"
 
-      - name: Select stock clips (build assets/stock_list.txt)
-        run: python generator/select_stock.py --series "${{ matrix.series }}" --max_clips 6
-
-      # --- Push any newly fetched stock back into gh-pages "stock cache" ---
-      - name: Push updated stock cache to gh-pages
-        run: |
-          set -e
-          mkdir -p site/stock/${{ matrix.series }}
-          shopt -s nullglob
-          newfiles=(assets/stock/${{ matrix.series }}/*.mp4)
-          if [ ${#newfiles[@]} -gt 0 ]; then
-            cp -n assets/stock/${{ matrix.series }}/*.mp4 site/stock/${{ matrix.series }}/ || true
-          fi
-          if [ -d assets/stock/common ]; then
-            mkdir -p site/stock/common
-            cp -n assets/stock/common/*.mp4 site/stock/common/ 2>/dev/null || true
-          fi
-          cd site
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "stock/${{ matrix.series }}" "stock/common" || true
-          git commit -m "stock cache update (${{ matrix.series }}) run ${{ github.run_id }}" || echo "nothing to commit"
-          git pull --rebase origin gh-pages || true
-          git push
-
-      # --- Visual generation: calm background, shotlist, route (Card-first) ---
-      - name: Generate background (calm solid color)
+      - name: Generate background (calm color)
         env:
+          SERIES: ${{ matrix.series }}
           BG_COLOR: ${{ env.BG_COLOR }}
-        run: python generator/gen_background.py --series "${{ matrix.series }}"
+        run: |
+          python generator/gen_background.py --series "${SERIES}"
 
-      - name: Make shotlist (beats)
+      - name: Make shotlist (adaptive beats)
         env:
+          SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: gpt-4o
-        run: python planner/make_shotlist.py --series "${{ matrix.series }}"
+        run: |
+          python planner/make_shotlist.py --series "${SERIES}"
 
-      - name: Route beats → shots (Card-first + stock-aware)
+      - name: Route beats → topic adapters (no stock)
         env:
-          FORCE_CARD: ${{ env.FORCE_CARD }}
-          PYTHONPATH: ${{ github.workspace }}    # <— ensure top-level modules are importable
+          SERIES: ${{ matrix.series }}
+          PYTHONPATH: ${{ env.PYTHONPATH }}
         run: |
-          python generator/route_shots.py --series "${{ matrix.series }}"
+          python generator/route_shots.py --series "${SERIES}"
 
-
-      - name: Diagnose stock usage (after routing)
-        run: |
-          set -e
-          series="${{ matrix.series }}"
-          echo "== stock dir listing =="
-          find assets/stock/"$series" -maxdepth 2 -type f -print 2>/dev/null || true
-          echo "== latest episode assets =="
-          EP_ASSETS="$(ls -d out/"$series"/ep_*/assets 2>/dev/null | sort -r | head -n1 || true)"
-          echo "EP_ASSETS=$EP_ASSETS"
-          if [ -n "$EP_ASSETS" ]; then
-            echo "-- stock_list.txt (if any) --"
-            [ -f "$EP_ASSETS/stock_list.txt" ] && cat "$EP_ASSETS/stock_list.txt" || echo "no stock_list.txt"
-            echo "-- shots --"
-            ls -lh "$EP_ASSETS/shots" || true
-            echo "-- ffprobe first shot --"
-            ffprobe -v error -show_streams -show_format "$EP_ASSETS/shots/000.mp4" || true
-          fi
-
-
-      - name: Diagnose visuals & stock (readable logs)
-        run: |
-          set -e
-          series="${{ matrix.series }}"
-          echo "---- STOCK LIBRARY ----"
-          ls -lh assets/stock/"$series" || echo "no series stock dir"
-          echo "---- STOCK LIST (select_stock) ----"
-          LATEST_ASSETS_DIR="$(ls -d out/"$series"/ep_*/assets 2>/dev/null | sort -r | head -n1 || true)"
-          if [ -n "$LATEST_ASSETS_DIR" ]; then
-            STOCK_LIST="$LATEST_ASSETS_DIR/stock_list.txt"
-            if [ -f "$STOCK_LIST" ]; then
-              cat "$STOCK_LIST" || true
-            else
-              echo "No stock_list.txt (select_stock may not have run or found nothing)."
-            fi
-            echo "---- SHOTS ----"
-            ls -lh "$LATEST_ASSETS_DIR/shots" || true
-            echo "---- VISUALS ----"
-            ls -lh "$LATEST_ASSETS_DIR"/visuals*.mp4 || true
-          else
-            echo "No episode assets dir found."
-          fi
-
-
-      - name: Build/trim visuals to narration
-        run: python assembly/cut_visuals.py --series "${{ matrix.series }}"
-
-      - name: Create subtitles (SRT)
+      - name: Cut visuals to narration length
         env:
+          SERIES: ${{ matrix.series }}
+        run: |
+          python assembly/cut_visuals.py --series "${SERIES}"
+
+      - name: Make subtitles (SRT)
+        env:
+          SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: python generator/make_srt.py --series "${{ matrix.series }}"
+        run: |
+          python generator/make_srt.py --series "${SERIES}"
 
-      - name: Assemble final video
-        run: python assembly/build_video.py --series "${{ matrix.series }}"
+      - name: Assemble final video (titles/overlay/subs)
+        env:
+          SERIES: ${{ matrix.series }}
+        run: |
+          python assembly/build_video.py --series "${SERIES}"
 
-      - name: Validate final video (size/codec/duration)
-        run: python assembly/validate_video.py --series "${{ matrix.series }}"
+      - name: Validate final video
+        env:
+          SERIES: ${{ matrix.series }}
+        run: |
+          python assembly/validate_video.py --series "${SERIES}"
 
-      # --- Resolve the final MP4 path and build a caption from title+overlay ---
-      - name: Resolve final mp4 & caption (bash + jq, no heredoc)
+      # ---------- Resolve MP4 & caption ----------
+      - name: Resolve final mp4 & caption (bash + jq)
         id: meta
         run: |
           set -e
-
-          # Ensure jq is available (lightweight JSON parser).
-          command -v jq >/dev/null 2>&1 || sudo apt-get update && sudo apt-get install -y jq
-
+          sudo apt-get install -y jq > /dev/null
           series="${{ matrix.series }}"
-
-          # 1) Find the latest plan.json under out/<series>/ep_*/
-          PLAN="$(ls -t "out/${series}"/ep_*/plan.json 2>/dev/null | head -n1 || true)"
-
-          # 2) Prefer plan.json's .video_path; if missing, fall back to newest file in out/<series>/final/
+          PLAN="$(ls -t out/${series}/ep_*/plan.json 2>/dev/null | head -n1 || true)"
           MP4=""
           if [ -n "$PLAN" ]; then
             MP4="$(jq -r '.video_path // ""' "$PLAN")"
           fi
           if [ -z "$MP4" ] || [ ! -f "$MP4" ]; then
-            MP4="$(ls -t "out/${series}/final/"*.mp4 2>/dev/null | head -n1 || true)"
+            MP4="$(ls -t out/${series}/final/"*.mp4 2>/dev/null | head -n1 || true)"
           fi
           if [ -z "$MP4" ]; then
-            echo "No final mp4 found" >&2
-            exit 1
+            echo "No final mp4 found" >&2; exit 1
           fi
-
           FILE_BASENAME="$(basename "$MP4")"
-
-          # 3) Build a caption from title.txt + overlay.txt (fallbacks if missing)
-          if [ -n "$PLAN" ]; then
-            EP_DIR="$(dirname "$PLAN")"
-          else
-            EP_DIR="$(ls -d "out/${series}"/ep_* 2>/dev/null | sort -r | head -n1 || true)"
-          fi
-
-          TITLE="${series} Daily"
-          OVERLAY="New episode!"
-          if [ -n "$EP_DIR" ]; then
-            [ -f "$EP_DIR/assets/title.txt" ] && TITLE="$(cat "$EP_DIR/assets/title.txt")" || true
-            [ -f "$EP_DIR/assets/overlay.txt" ] && OVERLAY="$(cat "$EP_DIR/assets/overlay.txt")" || true
-          fi
+          EP="$(dirname "$PLAN")"
+          TITLE="$(cat "$EP/assets/title.txt" 2>/dev/null || echo "${series} Daily")"
+          OVERLAY="$(cat "$EP/assets/overlay.txt" 2>/dev/null || echo "New episode!")"
           CAPTION="${TITLE} — ${OVERLAY}"
-
-          # 4) Expose outputs to later steps
           {
             echo "mp4=$MP4"
             echo "file=$FILE_BASENAME"
@@ -277,88 +164,35 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-
-      # --- Publish the MP4 into gh-pages (stable, fetchable URL) ---
-      - name: Publish MP4 to gh-pages (robust push)
+      # ---------- Publish to gh-pages (robust push) ----------
+      - name: Publish MP4 to gh-pages
         id: publish
         run: |
           set -e
           series="${{ matrix.series }}"
           FILE="${{ steps.meta.outputs.mp4 }}"
           NAME="${series}-${{ github.run_id }}.mp4"
-
-          # Stage file into the checked-out gh-pages worktree (site/)
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          # Checkout gh-pages in site/
+          if [ ! -d site ]; then
+            git clone --depth=1 --branch gh-pages "https://github.com/${{ github.repository }}.git" site
+          fi
           mkdir -p site/reels/"$series"
           cp "$FILE" "site/reels/$series/$NAME"
-
           cd site
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
           git add "reels/$series/$NAME"
-
-          # Create a commit even if nothing staged (won't error if nothing new)
           git commit -m "reel: $NAME ($series) from run ${{ github.run_id }}" || true
-
-          # Robust push: fetch, rebase, retry push to avoid "cannot lock ref" races
-          git fetch origin gh-pages
-
-          # Rebase our local commit(s) onto the remote tip
-          git rebase origin/gh-pages || {
-            echo "Rebase failed; aborting and resetting to remote tip."
-            git rebase --abort || true
-            git reset --hard origin/gh-pages
-            # Re-apply our file and recommit
-            cp "reels/$series/$NAME" "reels/$series/$NAME" # no-op safeguard
-            git add "reels/$series/$NAME"
-            git commit -m "reel: $NAME ($series) from run ${{ github.run_id }}" || true
-          }
-
-          # Try push up to 5 times in case another job wins the race between fetch & push
           for i in 1 2 3 4 5; do
-            if git push --force-with-lease origin HEAD:gh-pages; then
-              echo "Push succeeded on attempt $i"
+            git pull --rebase origin gh-pages || true
+            if git push origin HEAD:gh-pages; then
               break
             fi
-            echo "Push failed (attempt $i). Fetching/rebasing then retrying…"
-            git fetch origin gh-pages
-            git rebase origin/gh-pages || { git rebase --abort || true; git reset --hard origin/gh-pages; }
-            sleep 2
-            if [ "$i" = "5" ]; then
-              echo "Push failed after retries"; exit 1
-            fi
+            echo "Push failed (attempt $i). Retrying…"; sleep 2
+            if [ "$i" = "5" ]; then echo "Push failed after retries"; exit 1; fi
           done
-
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
-
-      # --- WAIT for GitHub Pages to finish building the site (not just hope/guess) ---
-      - name: Wait for GitHub Pages build (official API)
-        id: pages
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          OWNER="${GITHUB_REPOSITORY_OWNER}"
-          REPO="${GITHUB_REPOSITORY#*/}"
-          # Poll /pages/builds/latest until status == "built" (or timeout)
-          for i in {1..90}; do
-            RESP=$(curl -sS -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${OWNER}/${REPO}/pages/builds/latest")
-            STATUS=$(echo "$RESP" | jq -r '.status // empty')
-            echo "[pages] try $i -> status=$STATUS"
-            if [ "$STATUS" = "built" ]; then
-              echo "ready=true" >> $GITHUB_OUTPUT
-              break
-            fi
-            if [ "$STATUS" = "errored" ]; then
-              echo "Pages build errored"; exit 1
-            fi
-            sleep 2
-          done
-
-      # --- Compute the public file URL (project pages path) ---
       - name: Compute public URL
         id: url
         run: |
@@ -370,13 +204,11 @@ jobs:
           echo "url=${URL}" >> $GITHUB_OUTPUT
           echo "Public URL: ${URL}"
 
-      # --- Final sanity check on the actual file URL (HEAD must be 200 + content-type: video/*) ---
-      - name: HEAD check wait until file is live
+      - name: Wait for file to be live
         id: head
         run: |
           set -e
           URL="${{ steps.url.outputs.url }}"
-          echo "Waiting for: $URL"
           for i in {1..90}; do
             code=$(curl -sI -o /dev/null -w "%{http_code}" "$URL" || true)
             ctype=$(curl -sI "$URL" | awk -F': ' 'tolower($1)=="content-type"{print tolower($2)}' | tr -d '\r' || true)
@@ -390,31 +222,24 @@ jobs:
           echo "live=false" >> $GITHUB_OUTPUT
           exit 0
 
-      # --- Instagram posting rules ---
-      # Only ai_teacher posts "for real".
-      # Others do a DRY step so you can confirm URL/caption without hitting the IG API.
-
-      - name: Post to Instagram — REAL (ai_teacher only)
-        if: ${{ matrix.series == 'ai_teacher' && steps.head.outputs.live == 'true' }}
+      # ---------- Instagram rules ----------
+      - name: Post to Instagram — REAL (math_of_ML only)
+        if: ${{ matrix.series == 'math_of_ML' && steps.head.outputs.live == 'true' }}
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: |
           URL="${{ steps.url.outputs.url }}"
           CAP="${{ steps.meta.outputs.caption }}"
-          echo "Posting (REAL) for ai_teacher: $URL"
+          echo "Posting (REAL) for math_of_ML: $URL"
           python publisher/post_instagram.py "$URL" "$CAP"
 
-      - name: Post to Instagram — DRY RUN (all non-ai_teacher)
-        if: ${{ matrix.series != 'ai_teacher' && steps.head.outputs.live == 'true' }}
+      - name: Post to Instagram — DRY RUN (MAS, mixed)
+        if: ${{ matrix.series != 'math_of_ML' && steps.head.outputs.live == 'true' }}
         run: |
-          URL="${{ steps.url.outputs.url }}"
-          CAP="${{ steps.meta.outputs.caption }}"
-          echo "[DRY] Would post for series=${{ matrix.series }}"
-          echo "[DRY] URL: $URL"
-          echo "[DRY] CAPTION: $CAP"
+          echo "[DRY] Would post URL: ${{ steps.url.outputs.url }}"
+          echo "[DRY] CAPTION: ${{ steps.meta.outputs.caption }}"
 
-      # --- Artifacts for inspection ---
       - name: Upload final mp4 artifact
         if: always()
         uses: actions/upload-artifact@v4
