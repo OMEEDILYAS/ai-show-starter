@@ -1,6 +1,8 @@
 name: build-linux-wheels
 on:
-  workflow_dispatch: {}
+  schedule:
+    - cron: "0 15 * * *"     # daily at 15:00 UTC (10:00 America/Chicago)
+  workflow_dispatch:
 
 jobs:
   wheels:
