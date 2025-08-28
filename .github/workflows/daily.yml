@@ -59,7 +59,7 @@ jobs:
           # Ensure core deps present even without vendor wheels
           pip install --upgrade pip
           pip install numpy pillow
-          pip install matplotlib networkx graphviz
+          pip install matplotlib networkx graphviz pyyaml pandas
 
       # ----------------- PIPELINE -----------------
 
