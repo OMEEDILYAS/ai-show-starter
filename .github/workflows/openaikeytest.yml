@@ -1,0 +1,30 @@
+name: Test OpenAI API Call
+
+on:
+  workflow_dispatch:  # run manually
+
+jobs:
+  test-openai:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install openai
+        run: pip install openai
+
+      - name: Run test request
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python - << 'EOF'
+          from openai import OpenAI
+          import os
+          client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+          response = client.chat.completions.create(
+              model="gpt-4o",
+              messages=[{"role": "user", "content": "Say hi in 5 words"}]
+          )
+          print("Response:", response.choices[0].message.content)
+          EOF
