@@ -102,6 +102,14 @@ jobs:
           BG_COLOR: ${{ env.BG_COLOR }}
         run: |
           python generator/gen_background.py --series "${SERIES}"
+        
+      - name: Cap background to 90s
+        run: |
+          EP=$(ls -td out/${{ matrix.series }}/ep_* | head -n1)
+          if [ -f "$EP/assets/bg.mp4" ]; then
+            ffmpeg -y -i "$EP/assets/bg.mp4" -t 90 -c copy "$EP/assets/bg.mp4"
+          fi
+
 
       - name: Make shotlist (adaptive beats)
         env:
@@ -193,6 +201,14 @@ jobs:
             echo "$CAPTION"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Cap final to 90s
+        run: |
+          series="${{ matrix.series }}"
+          FINAL=$(ls -t out/"$series"/final/*.mp4 2>/dev/null | head -n1 || true)
+          if [ -n "$FINAL" ]; then
+            ffmpeg -y -i "$FINAL" -t 90 -c copy "$FINAL"
+          fi
 
       # ---------- Publish to gh-pages (robust push) ----------
       - name: Publish MP4 to gh-pages
