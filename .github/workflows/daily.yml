@@ -259,7 +259,7 @@ jobs:
         run: |
           set -e
           URL="${{ steps.url.outputs.url }}"
-          for i in {1..90}; do
+          for i in {1..200}; do
             code=$(curl -sI -o /dev/null -w "%{http_code}" "$URL" || true)
             ctype=$(curl -sI "$URL" | awk -F': ' 'tolower($1)=="content-type"{print tolower($2)}' | tr -d '\r' || true)
             echo "[try $i] code=$code ctype=$ctype"
@@ -267,7 +267,7 @@ jobs:
               echo "live=true" >> $GITHUB_OUTPUT
               exit 0
             fi
-            sleep 2
+            sleep 6
           done
           echo "live=false" >> $GITHUB_OUTPUT
           exit 0
