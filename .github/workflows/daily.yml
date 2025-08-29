@@ -102,13 +102,6 @@ jobs:
           BG_COLOR: ${{ env.BG_COLOR }}
         run: |
           python generator/gen_background.py --series "${SERIES}"
-        
-      - name: Cap background to 90s
-        run: |
-          EP=$(ls -td out/${{ matrix.series }}/ep_* | head -n1)
-          if [ -f "$EP/assets/bg.mp4" ]; then
-            ffmpeg -y -i "$EP/assets/bg.mp4" -t 90 -c copy "$EP/assets/bg.mp4"
-          fi
 
 
       - name: Make shotlist (adaptive beats)
@@ -126,11 +119,35 @@ jobs:
         run: |
           python generator/route_shots.py --series "${SERIES}"
 
+      - name: Cut visuals to narration
+        run: |
+          python assembly/cut_visuals.py --series "${SERIES}"
+
+
       - name: Cut visuals to narration length
         env:
           SERIES: ${{ matrix.series }}
         run: |
           python assembly/cut_visuals.py --series "${SERIES}"
+
+      - name: Cap visuals to 90s (safety)
+        run: |
+          EP=$(ls -td out/${{ matrix.series }}/ep_* | head -n1)
+          if [ -f "$EP/assets/visuals.mp4" ]; then
+            ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$EP/assets/visuals.mp4" || true
+            ffmpeg -y -i "$EP/assets/visuals.mp4" -t 90 -c copy "$EP/assets/visuals.mp4"
+            echo "[cap] visuals.mp4 clamped to 90s"
+          fi
+
+
+      - name: Durations sanity check
+        run: |
+          EP=$(ls -td out/${{ matrix.series }}/ep_* | head -n1)
+          test -f "$EP/assets/narration.txt" && echo "WORDS: $(wc -w < "$EP/assets/narration.txt")"
+          test -f "$EP/assets/voice.wav" && echo -n "VOICE: " && ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$EP/assets/voice.wav" || true
+          test -f "$EP/assets/bg.mp4" && echo -n "BG: " && ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$EP/assets/bg.mp4" || true
+          test -f "$EP/assets/visuals.mp4" && echo -n "VISUALS: " && ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$EP/assets/visuals.mp4" || true
+
 
       - name: Make subtitles (SRT)
         env:
@@ -145,11 +162,32 @@ jobs:
         run: |
           python assembly/build_video.py --series "${SERIES}"
 
+      - name: Cap background to 90s (safety)
+        run: |
+          EP=$(ls -td out/${{ matrix.series }}/ep_* | head -n1)
+          if [ -f "$EP/assets/bg.mp4" ]; then
+            ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$EP/assets/bg.mp4" || true
+            ffmpeg -y -i "$EP/assets/bg.mp4" -t 90 -c copy "$EP/assets/bg.mp4"
+            echo "[cap] bg.mp4 clamped to 90s"
+          fi
+
+
       - name: Validate final video
         env:
           SERIES: ${{ matrix.series }}
         run: |
           python assembly/validate_video.py --series "${SERIES}"
+
+
+      - name: Cap final MP4 to 90s (safety)
+        run: |
+          series="${{ matrix.series }}"
+          FINAL=$(ls -t out/"$series"/final/*.mp4 2>/dev/null | head -n1 || true)
+          if [ -n "$FINAL" ]; then
+            ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$FINAL" || true
+            ffmpeg -y -i "$FINAL" -t 90 -c copy "$FINAL"
+            echo "[cap] final clamped to 90s"
+          fi
 
       # ---------- Resolve MP4 & caption ----------
       - name: Resolve final mp4 & caption (bash + jq)
