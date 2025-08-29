@@ -1,137 +1,125 @@
-# planner/agent_director.py
-import argparse
-import json
-import os
-import subprocess
-import sys
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+agent_director.py
+Purpose:
+  - Reads the episode plan (plan.json) created by plan_next.py
+  - Reads the source chunk (assets/source.txt)
+  - Produces a strict 70–90s narration (≈150–190 words) that summarizes ONLY the source
+  - Writes assets/narration.txt and assets/overlay.txt / assets/title.txt if missing
+
+Why:
+  - Prevents "psyche" or off-topic narration in MIXED channel by forcing the model
+    to summarize ONLY the textbook chunk. No free-styling.
+
+Env:
+  - OPENAI_API_KEY (required)
+  - OPENAI_MODEL (default: gpt-4o)
+
+Notes:
+  - We enforce "STRICT_SUMMARY". If the model strays, we regenerate once with an even harder constraint.
+"""
+import os, json, sys, time
 from pathlib import Path
 
-import requests  # needed for API call
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
+ROOT = Path(__file__).resolve().parents[1]
 
-SYS = """You are a short-form video director. Output tight, platform-ready copy.
-Rules:
-- Title <= 48 chars, punchy, no hashtags.
-- Overlay: one sentence, <= 80 chars, plain text.
-- Narration: 110–140 words (target ~50–60 seconds), clear and simple.
-- Avoid emojis, hashtags, links. No scene directions.
-- Stay on topic and series tone.
-- If a 'curriculum' is provided, STRICTLY base the content on it (summarize in your own words)."""
+def _read_text(p: Path) -> str:
+    return p.read_text(encoding="utf-8") if p.exists() else ""
 
-USER_TMPL = """Series: {series}
-Episode #: {epnum}
-Seed title: {seed_title}
-Theme/context: {theme}
-{maybe_curriculum}
+def _write_text(p: Path, s: str) -> None:
+    p.write_text(s.strip() + "\n", encoding="utf-8")
 
-Produce compact JSON with keys: title, overlay, narration."""
+def _load_json(p: Path) -> dict:
+    return json.loads(_read_text(p)) if p.exists() else {}
 
-def call_openai(prompt: str) -> str:
-    if not OPENAI_API_KEY:
-        raise SystemExit("OPENAI_API_KEY not set")
+def _save_json(p: Path, d: dict):
+    p.write_text(json.dumps(d, indent=2), encoding="utf-8")
+
+def _openai_chat(messages):
+    # lightweight OpenAI call (avoid extra deps)
+    import requests
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("[director] ERROR: OPENAI_API_KEY missing", file=sys.stderr)
+        sys.exit(1)
     url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-    body = {
-        "model": MODEL,
-        "messages": [
-            {"role": "system", "content": SYS},
-            {"role": "user", "content": prompt},
-        ],
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": messages,
         "temperature": 0.7,
-        "response_format": {"type": "json_object"},
+        "max_tokens": 600,
     }
-    r = requests.post(url, headers=headers, json=body, timeout=90)
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    r = requests.post(url, headers=headers, json=payload, timeout=60)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
-def ensure_plan(series: str) -> Path:
-    out_dir = Path("out") / series
-    plans = sorted(out_dir.glob("ep_*/plan.json"))
-    if plans:
-        return plans[-1]
-
-    # No plan.json yet → call planner
-    print(f"[agent] No plan.json found for {series}. Running planner…")
-    res = subprocess.run(
-        [sys.executable, "planner/plan_next.py", "--series", series],
-        capture_output=True, text=True
-    )
-    if res.returncode != 0:
-        print(res.stdout)
-        print(res.stderr, file=sys.stderr)
-        raise SystemExit(f"[agent] planner failed for {series} (exit {res.returncode})")
-
-    plans = sorted(out_dir.glob("ep_*/plan.json"))
-    if not plans:
-        raise SystemExit(f"[agent] planner ran but still no plan.json in out/{series}/ep_*/")
-    return plans[-1]
-
-def load_text(p: Path) -> str:
-    try:
-        return p.read_text(encoding="utf-8").strip()
-    except Exception:
-        return ""
-
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--series", required=True)
-    args = ap.parse_args()
-
-    plan_path = ensure_plan(args.series)
-    plan = {}
-    try:
-        plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    except Exception:
-        plan = {}
-
-    # Resolve episode dir and assets
+    # Locate latest plan.json
+    plans = sorted((ROOT / "out").rglob("ep_*/plan.json"))
+    if not plans:
+        print("[director] No plan.json found.", file=sys.stderr)
+        sys.exit(1)
+    plan_path = plans[-1]
     ep_dir = plan_path.parent
     assets = ep_dir / "assets"
-    assets.mkdir(parents=True, exist_ok=True)
 
-    # Pull any staged curriculum (optional)
-    curriculum_txt = assets / "curriculum.txt"
-    curriculum = load_text(curriculum_txt)
+    plan = _load_json(plan_path)
+    source = _read_text(assets / "source.txt")
+    if not source.strip():
+        print("[director] ERROR: source.txt empty or missing.", file=sys.stderr)
+        sys.exit(1)
 
-    # Inputs to the director
-    series = args.series
-    epnum = plan.get("episode", 1)
-    seed_title = plan.get("title", "Daily topic")
-    theme = plan.get("theme", plan.get("series", series))
+    # Title/overlay placeholders (could be refined by model but not required)
+    title_path = assets / "title.txt"
+    overlay_path = assets / "overlay.txt"
+    if not title_path.exists():
+        _write_text(title_path, f"{plan.get('effective_series','series')} — Chapter {plan.get('chapter','?')}")
+    if not overlay_path.exists():
+        _write_text(overlay_path, f"Section: {plan.get('section','?')}")
 
-    maybe_curr = f"Curriculum (strict):\n{curriculum}\n" if curriculum else ""
+    sys_msg = {
+        "role": "system",
+        "content": (
+            "You are a precise educator. You will receive an excerpt from a textbook.\n"
+            "RULES:\n"
+            "1) Produce a clear, engaging VO script of ~150–190 words (~70–90 seconds at slow pace).\n"
+            "2) STRICT_SUMMARY: Use ONLY information from the excerpt. Do not invent, generalize, or shift topics.\n"
+            "3) If equations/terms appear, you may name them (e.g., inner product, basis, payoff matrix), but no off-topic advice.\n"
+            "4) Tone: calm, concise teacher. No hype. No commands to the audience.\n"
+            "5) No lists unless needed; prefer short paragraphs with smooth transitions.\n"
+        )
+    }
+    user_msg = {
+        "role": "user",
+        "content": (
+            "Source excerpt:\n"
+            f"<<<\n{source}\n>>>\n\n"
+            "Write the narration now. 150–190 words. STRICT_SUMMARY."
+        )
+    }
 
-    prompt = USER_TMPL.format(
-        series=series,
-        epnum=epnum,
-        seed_title=seed_title,
-        theme=theme,
-        maybe_curriculum=maybe_curr,
+    text = _openai_chat([sys_msg, user_msg]).strip()
+
+    # Simple guard: if the model goes off-topic (keywords like 'stress', 'habits' but not present in source),
+    # call again with even stronger instruction.
+    lower = text.lower()
+    suspicious = any(k in lower for k in ["stress", "habit", "success", "calm"]) and not any(
+        k in source.lower() for k in ["stress", "habit", "success", "calm"]
     )
+    if suspicious:
+        print("[director] off-topic detected → retry with stricter instruction")
+        sys_msg["content"] += "\n6) If any part of your output is not directly supported by the excerpt, REPLACE it with a sentence that is."
+        text = _openai_chat([sys_msg, user_msg]).strip()
 
-    # Call the model
-    try:
-        content = call_openai(prompt)
-        data = json.loads(content)
-    except Exception as e:
-        # Fail-soft: keep previous values if model hiccups
-        print(f"[agent] OpenAI/director failed, keeping prior fields. Error: {e}", file=sys.stderr)
-        data = {}
-
-    # Merge into plan
-    plan["ai_title"] = data.get("title", plan.get("ai_title", plan.get("title")))
-    plan["ai_overlay"] = data.get("overlay", plan.get("ai_overlay", plan.get("overlay", "Quick lesson.")))
-    plan["ai_narration"] = data.get("narration", plan.get("ai_narration", plan.get("narration", "")))
-
-    # Optional: include a hint for downstream steps
-    plan["duration_target_sec"] = plan.get("duration_target_sec", 55)
-    if curriculum:
-        plan["curriculum_used"] = True
-
-    plan_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
-    print("[agent] updated:", plan_path)
+    _write_text(assets / "narration.txt", text)
+    print("[director] narration written:", len(text.split()), "words")
+    # persist back any minor meta we might want later
+    plan["narration_words"] = len(text.split())
+    _save_json(plan_path, plan)
 
 if __name__ == "__main__":
     main()
