@@ -85,6 +85,16 @@ jobs:
           OPENAI_TTS_VOICE: verse
         run: |
           python generator/gen_assets.py --series "${SERIES}"
+      
+      - name: Debug narration & voice
+        run: |
+          EP=$(ls -td out/${{ matrix.series }}/ep_* | head -n1)
+          echo "EPISODE: $EP"
+          echo "--- narration.txt ---"
+          wc -w "$EP/assets/narration.txt" || true
+          echo "--- voice.wav duration ---"
+          ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$EP/assets/voice.wav" || true
+
 
       - name: Generate background (calm color)
         env:
