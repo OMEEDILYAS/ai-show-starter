@@ -1,185 +1,163 @@
-name: daily-episodes
+name: Daily Curriculum Reels
 
 on:
+  workflow_dispatch: {}
   schedule:
-    - cron: "0 15 * * *"     # daily at 15:00 UTC (10:00 America/Chicago)
-  workflow_dispatch:
+    - cron: "0 14 * * *"   # run daily at 14:00 UTC (08:00 CST). adjust if you want
 
 permissions:
-  contents: write
+  contents: write          # needed for pushing to gh-pages with GITHUB_TOKEN
 
 jobs:
-  episode:
+  build:
     runs-on: ubuntu-latest
+
     strategy:
       fail-fast: false
       matrix:
-        # Three channels: math_of_ML (real post), MAS (dry), mixed (dry)
         series: [math_of_ML, MAS, mixed]
 
-    concurrency:
-      group: daily-${{ matrix.series }}
-      cancel-in-progress: false
-    timeout-minutes: 45
-
     env:
-      PYTHONUNBUFFERED: "1"
-      PYTHONPATH: ${{ github.workspace }}   # so adapters import cleanly
-      BG_COLOR: "0x101426"
+      PYTHONUNBUFFERED: 1
+      PYTHONPATH: ${{ github.workspace }}
+      BG_COLOR: 0x101426
 
     steps:
-      - uses: actions/checkout@v4
+      # -------------------------
+      # 0) Repo + Python + system deps
+      # -------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # --- System deps for visuals ---
-      - name: Install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg graphviz fonts-dejavu-core
-
-      # --- Python setup ---
-      - uses: actions/setup-python@v5
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('infra/requirements.txt') }}
-          restore-keys: ${{ runner.os }}-pip-
-
-      # --- Vendor wheels (Option A) OR fallback to pip ---
-      - name: Install Python deps (prefer vendor wheels)
+      - name: Install system packages (ffmpeg, graphviz)
         run: |
-          set -e
-          if ls vendor/wheels/*.whl 1>/dev/null 2>&1; then
-            echo "[deps] Installing vendor wheels…"
-            pip install vendor/wheels/*.whl
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg graphviz
+
+      - name: Install Python deps (prefer vendored wheels)
+        run: |
+          python -m pip install --upgrade pip
+          if ls vendor/wheels/*.whl 1> /dev/null 2>&1; then
+            echo "Installing from vendor/wheels/…"
+            pip install --no-index --find-links vendor/wheels vendor/wheels/*.whl
           fi
-          # Ensure core deps present even without vendor wheels
-          pip install --upgrade pip
-          pip install numpy pillow
-          pip install matplotlib networkx graphviz pyyaml pandas requests openai
+          # light deps from index (safe to fetch)
+          pip install --upgrade pyyaml requests soundfile
 
-      # ----------------- PIPELINE -----------------
-
-      - name: Plan episode (cursor + curriculum)
+      # -------------------------
+      # 1) Plan next episode for this series
+      # -------------------------
+      - name: Plan next
         env:
           SERIES: ${{ matrix.series }}
         run: |
           python planner/plan_next.py --series "${SERIES}"
 
-      - name: Director agent (strict summary)
-        env:
-          SERIES: ${{ matrix.series }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: gpt-4o
+      # Helpful visibility: what did we just create?
+      - name: Inspect out tree
         run: |
-          python planner/agent_director.py --series "${SERIES}"
+          echo "SERIES=${{ matrix.series }}"
+          find out -maxdepth 3 -type f -name 'plan.json' -print || true
+          find out -maxdepth 3 -type f -name 'narration.txt' -print || true
 
-      - name: Generate assets (TTS, texts)
-        env:
-          SERIES: ${{ matrix.series }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_TTS_MODEL: gpt-4o-mini-tts
-          OPENAI_TTS_VOICE: verse
+      # Detect whether an episode directory exists for this series
+      - name: Detect episode for this series
+        id: ep
         run: |
-          python generator/gen_assets.py --series "${SERIES}"
-      
-      - name: Debug narration & voice
-        run: |
-          EP=$(ls -td out/${{ matrix.series }}/ep_* | head -n1)
-          echo "EPISODE: $EP"
-          echo "--- narration.txt ---"
-          wc -w "$EP/assets/narration.txt" || true
-          echo "--- voice.wav duration ---"
-          ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$EP/assets/voice.wav" || true
-
-
-      - name: Generate background (calm color)
-        env:
-          SERIES: ${{ matrix.series }}
-          BG_COLOR: ${{ env.BG_COLOR }}
-        run: |
-          python generator/gen_background.py --series "${SERIES}"
-
-
-      - name: Make shotlist (adaptive beats)
-        env:
-          SERIES: ${{ matrix.series }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: gpt-4o
-        run: |
-          python planner/make_shotlist.py --series "${SERIES}"
-
-      - name: Route beats → topic adapters (no stock)
-        env:
-          SERIES: ${{ matrix.series }}
-          PYTHONPATH: ${{ env.PYTHONPATH }}
-        run: |
-          python generator/route_shots.py --series "${SERIES}"
-
-      - name: Cut visuals to narration
-        run: |
-          python assembly/cut_visuals.py --series "${SERIES}"
-
-
-      - name: Cut visuals to narration length
-        env:
-          SERIES: ${{ matrix.series }}
-        run: |
-          python assembly/cut_visuals.py --series "${SERIES}"
-
-      - name: Cap visuals to 90s (safety)
-        run: |
-          EP=$(ls -td out/${{ matrix.series }}/ep_* | head -n1)
-          if [ -f "$EP/assets/visuals.mp4" ]; then
-            ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$EP/assets/visuals.mp4" || true
-            ffmpeg -y -i "$EP/assets/visuals.mp4" -t 90 -c copy "$EP/assets/visuals.mp4"
-            echo "[cap] visuals.mp4 clamped to 90s"
+          series="${{ matrix.series }}"
+          EP=$(ls -td out/"$series"/ep_* 2>/dev/null | head -n1 || true)
+          if [ -z "$EP" ]; then
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "No episode folder for $series — downstream steps will be skipped."
+          else
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "ep=$EP" >> $GITHUB_OUTPUT
+            echo "Episode: $EP"
           fi
 
-
-      - name: Durations sanity check
+      # -------------------------
+      # 2) Director (strict to source) → narration
+      # -------------------------
+      - name: Write narration (director, strict)
+        if: steps.ep.outputs.found == 'true'
         run: |
-          EP=$(ls -td out/${{ matrix.series }}/ep_* | head -n1)
-          test -f "$EP/assets/narration.txt" && echo "WORDS: $(wc -w < "$EP/assets/narration.txt")"
-          test -f "$EP/assets/voice.wav" && echo -n "VOICE: " && ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$EP/assets/voice.wav" || true
-          test -f "$EP/assets/bg.mp4" && echo -n "BG: " && ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$EP/assets/bg.mp4" || true
-          test -f "$EP/assets/visuals.mp4" && echo -n "VISUALS: " && ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$EP/assets/visuals.mp4" || true
+          python planner/agent_director.py
 
+      # -------------------------
+      # 3) Shotlist (12–18 beats)
+      # -------------------------
+      - name: Make shotlist
+        if: steps.ep.outputs.found == 'true'
+        run: |
+          python planner/make_shotlist.py
 
-      - name: Make subtitles (SRT)
+      # -------------------------
+      # 4) TTS (voice.wav)
+      # -------------------------
+      - name: Synthesize voice (TTS)
+        if: steps.ep.outputs.found == 'true'
         env:
-          SERIES: ${{ matrix.series }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python generator/make_srt.py --series "${SERIES}"
+          # Use your existing TTS script (adjust path if different in your repo)
+          python tts_openai.py --series "${{ matrix.series }}"
 
-      - name: Assemble final video (titles/overlay/subs)
-        env:
-          SERIES: ${{ matrix.series }}
+      # -------------------------
+      # 5) Background (hardened; then clamp to 90s)
+      # -------------------------
+      - name: Generate background
+        if: steps.ep.outputs.found == 'true'
         run: |
-          python assembly/build_video.py --series "${SERIES}"
+          python generator/gen_background.py --series "${{ matrix.series }}"
 
       - name: Cap background to 90s (safety)
+        if: steps.ep.outputs.found == 'true'
         run: |
-          EP=$(ls -td out/${{ matrix.series }}/ep_* | head -n1)
+          EP="${{ steps.ep.outputs.ep }}"
           if [ -f "$EP/assets/bg.mp4" ]; then
             ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$EP/assets/bg.mp4" || true
             ffmpeg -y -i "$EP/assets/bg.mp4" -t 90 -c copy "$EP/assets/bg.mp4"
             echo "[cap] bg.mp4 clamped to 90s"
           fi
 
-
-      - name: Validate final video
-        env:
-          SERIES: ${{ matrix.series }}
+      # -------------------------
+      # 6) Route beats to shots, then cut visuals to narration; clamp
+      # -------------------------
+      - name: Route beats to shots
+        if: steps.ep.outputs.found == 'true'
         run: |
-          python assembly/validate_video.py --series "${SERIES}"
+          python generator/route_shots.py --series "${{ matrix.series }}"
 
+      - name: Cut visuals to narration
+        if: steps.ep.outputs.found == 'true'
+        run: |
+          python assembly/cut_visuals.py --series "${{ matrix.series }}"
+
+      - name: Cap visuals to 90s (safety)
+        if: steps.ep.outputs.found == 'true'
+        run: |
+          EP="${{ steps.ep.outputs.ep }}"
+          if [ -f "$EP/assets/visuals.mp4" ]; then
+            ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$EP/assets/visuals.mp4" || true
+            ffmpeg -y -i "$EP/assets/visuals.mp4" -t 90 -c copy "$EP/assets/visuals.mp4"
+            echo "[cap] visuals.mp4 clamped to 90s"
+          fi
+
+      # -------------------------
+      # 7) Build the final (combines bg + visuals + subs/audio)
+      # -------------------------
+      - name: Build final video
+        if: steps.ep.outputs.found == 'true'
+        run: |
+          python assembly/build_video.py --series "${{ matrix.series }}"
 
       - name: Cap final MP4 to 90s (safety)
+        if: steps.ep.outputs.found == 'true'
         run: |
           series="${{ matrix.series }}"
           FINAL=$(ls -t out/"$series"/final/*.mp4 2>/dev/null | head -n1 || true)
@@ -189,8 +167,11 @@ jobs:
             echo "[cap] final clamped to 90s"
           fi
 
-      # ---------- Resolve MP4 & caption ----------
+      # -------------------------
+      # 8) Resolve final mp4 + caption (uses jq for safety)
+      # -------------------------
       - name: Resolve final mp4 & caption (bash + jq)
+        if: steps.ep.outputs.found == 'true'
         id: meta
         run: |
           set -euo pipefail
@@ -199,35 +180,25 @@ jobs:
 
           series="${{ matrix.series }}"
 
-          # Find latest plan.json (if any)
-          PLAN="$(ls -t out/"$series"/ep_*/plan.json 2>/dev/null | head -n1 || true)"
+          PLAN="$(ls -t out/${series}/ep_*/plan.json 2>/dev/null | head -n1 || true)"
           MP4=""
-
-          # Prefer video_path recorded in plan.json
           if [ -n "$PLAN" ]; then
             MP4="$(jq -r '.video_path // ""' "$PLAN")"
           fi
-
-          # Fallback: newest mp4 under out/<series>/final/
           if [ -z "$MP4" ] || [ ! -f "$MP4" ]; then
-            MP4="$(ls -t out/"$series"/final/*.mp4 2>/dev/null | head -n1 || true)"
-            #                    ^^^^^^^  <-- no inner quotes around the glob
+            MP4="$(ls -t out/${series}/final/*.mp4 2>/dev/null | head -n1 || true)"
           fi
-
           if [ -z "$MP4" ]; then
-            echo "No final mp4 found" >&2
-            exit 1
+            echo "No final mp4 found" >&2; exit 1
           fi
-
           FILE_BASENAME="$(basename "$MP4")"
 
-          # Determine the episode dir for captions (works even if PLAN is empty)
+          # Episode dir (for title/overlay)
           if [ -n "$PLAN" ]; then
             EP_DIR="$(dirname "$PLAN")"
           else
             EP_DIR="$(dirname "$(dirname "$MP4")")"
           fi
-
           TITLE="$(cat "$EP_DIR/assets/title.txt" 2>/dev/null || echo "${series} Daily")"
           OVERLAY="$(cat "$EP_DIR/assets/overlay.txt" 2>/dev/null || echo "New episode!")"
           CAPTION="${TITLE} — ${OVERLAY}"
@@ -240,23 +211,17 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Cap final to 90s
-        run: |
-          series="${{ matrix.series }}"
-          FINAL=$(ls -t out/"$series"/final/*.mp4 2>/dev/null | head -n1 || true)
-          if [ -n "$FINAL" ]; then
-            ffmpeg -y -i "$FINAL" -t 90 -c copy "$FINAL"
-          fi
-
-      # ---------- Publish to gh-pages (robust push) ----------
+      # -------------------------
+      # 9) Publish to gh-pages (token-auth clone)
+      # -------------------------
       - name: Publish MP4 to gh-pages
+        if: steps.ep.outputs.found == 'true'
         id: publish
         env:
           GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # auto-provided token
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-
           series="${{ matrix.series }}"
           FILE="${{ steps.meta.outputs.mp4 }}"
           NAME="${series}-${{ github.run_id }}.mp4"
@@ -264,7 +229,6 @@ jobs:
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Clone with token (so push is authenticated)
           if [ ! -d site ]; then
             git clone --depth=1 --branch gh-pages \
               "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" site
@@ -276,61 +240,30 @@ jobs:
           cd site
           git add "reels/$series/$NAME"
           git commit -m "reel: $NAME ($series) from run ${{ github.run_id }}" || true
-          # Rebase + push with token-backed remote
           git pull --rebase origin gh-pages || true
           git push origin HEAD:gh-pages
+
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Compute public URL
-        id: url
-        run: |
-          OWNER="${GITHUB_REPOSITORY_OWNER}"
-          REPO="${GITHUB_REPOSITORY#*/}"
-          FILE="${{ steps.publish.outputs.name }}"
-          BASE="https://${OWNER}.github.io/${REPO}"
-          URL="${BASE}/reels/${{ matrix.series }}/${FILE}"
-          echo "url=${URL}" >> $GITHUB_OUTPUT
-          echo "Public URL: ${URL}"
-
-      - name: Wait for file to be live
-        id: head
-        run: |
-          set -e
-          URL="${{ steps.url.outputs.url }}"
-          for i in {1..200}; do
-            code=$(curl -sI -o /dev/null -w "%{http_code}" "$URL" || true)
-            ctype=$(curl -sI "$URL" | awk -F': ' 'tolower($1)=="content-type"{print tolower($2)}' | tr -d '\r' || true)
-            echo "[try $i] code=$code ctype=$ctype"
-            if [ "$code" = "200" ] && [[ "$ctype" == video/* ]]; then
-              echo "live=true" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-            sleep 6
-          done
-          echo "live=false" >> $GITHUB_OUTPUT
-          exit 0
-
-      # ---------- Instagram rules ----------
-      - name: Post to Instagram — REAL (math_of_ML only)
-        if: ${{ matrix.series == 'math_of_ML' && steps.head.outputs.live == 'true' }}
+      # -------------------------
+      # 10) Post to Instagram (REAL for math_of_ML, DRY for others)
+      # -------------------------
+      - name: Post to Instagram (REAL for math_of_ML)
+        if: steps.ep.outputs.found == 'true' && matrix.series == 'math_of_ML'
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: |
-          URL="${{ steps.url.outputs.url }}"
+          URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/reels/${{ matrix.series }}/${{ steps.publish.outputs.name }}"
           CAP="${{ steps.meta.outputs.caption }}"
-          echo "Posting (REAL) for math_of_ML: $URL"
+          echo "Posting (REAL) for ${{ matrix.series }}: $URL"
           python publisher/post_instagram.py "$URL" "$CAP"
 
-      - name: Post to Instagram — DRY RUN (MAS, mixed)
-        if: ${{ matrix.series != 'math_of_ML' && steps.head.outputs.live == 'true' }}
+      - name: Post to Instagram (DRY for non-math_of_ML)
+        if: steps.ep.outputs.found == 'true' && matrix.series != 'math_of_ML'
         run: |
-          echo "[DRY] Would post URL: ${{ steps.url.outputs.url }}"
-          echo "[DRY] CAPTION: ${{ steps.meta.outputs.caption }}"
-
-      - name: Upload final mp4 artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.series }}-final
-          path: out/${{ matrix.series }}/final/*.mp4
+          URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/reels/${{ matrix.series }}/${{ steps.publish.outputs.name }}"
+          CAP="${{ steps.meta.outputs.caption }}"
+          echo "DRY-RUN (no publish) for ${{ matrix.series }}:"
+          echo "  URL: $URL"
+          echo "  CAP: $CAP"
