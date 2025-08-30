@@ -20,7 +20,8 @@ jobs:
     env:
       PYTHONUNBUFFERED: 1
       PYTHONPATH: ${{ github.workspace }}
-      BG_COLOR: 0x101426
+      BG_COLOR: "0x101426"   # quote this! see note below
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
     steps:
       # -------------------------
