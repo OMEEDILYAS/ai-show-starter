@@ -20,12 +20,20 @@ jobs:
           python -m pip install --upgrade pip wheel
           mkdir -p vendor/wheels
 
-          # Download manylinux wheels (Python packages only)
+          # Pin a compatible, modern set and include manimpango.
+          # (We avoid pycairo wheels; we’ll apt-get python3-cairo at runtime.)
           pip download --only-binary=:all: --dest vendor/wheels \
-            manim plotly vpython moderngl moderngl-window kaleido
+            "manim==0.19.0" \
+            "manimpango==0.6.0" \
+            "plotly==5.24.1" \
+            "kaleido==0.2.1" \
+            "vpython==7.6.5" \
+            "moderngl==5.12.0" \
+            "moderngl-window==3.1.1"
 
           echo "== wheels =="
           ls -al vendor/wheels
+
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
