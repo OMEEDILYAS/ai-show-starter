@@ -19,9 +19,11 @@ jobs:
           set -e
           python -m pip install --upgrade pip wheel
           mkdir -p vendor/wheels
-          # Download prebuilt manylinux wheels only
+
+          # Download manylinux wheels (Python packages only)
           pip download --only-binary=:all: --dest vendor/wheels \
-            manim plotly vpython pycairo moderngl moderngl-window kaleido libcairo2 libpango-1.0-0 libpangocairo-1.0-0
+            manim plotly vpython moderngl moderngl-window kaleido
+
           echo "== wheels =="
           ls -al vendor/wheels
 
