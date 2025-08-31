@@ -21,7 +21,7 @@ jobs:
           mkdir -p vendor/wheels
           # Download prebuilt manylinux wheels only
           pip download --only-binary=:all: --dest vendor/wheels \
-            numpy pillow matplotlib networkx graphviz
+            manim plotly vpython pycairo moderngl moderngl-window kaleido libcairo2 libpango-1.0-0 libpangocairo-1.0-0
           echo "== wheels =="
           ls -al vendor/wheels
 
