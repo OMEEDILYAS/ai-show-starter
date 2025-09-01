@@ -26,3 +26,5 @@ six==1.17.0
 # handy, already present, used elsewhere
 networkx==3.5
 graphviz==0.21
+pandas
+openai
