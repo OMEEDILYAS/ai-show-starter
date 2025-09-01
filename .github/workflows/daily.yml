@@ -99,6 +99,72 @@ jobs:
           # Adjust path if your TTS entrypoint differs
           python generator/tts_openai.py --series "${SERIES}"
 
+      - name: Normalize voice path for SRT
+        env:
+          SERIES: ${{ matrix.series }}
+        run: |
+          set -e
+          series="${SERIES}"
+
+          # Find latest episode dir for the series
+          EP_DIR="$(ls -d "out/${series}"/ep_* 2>/dev/null | sort | tail -n1 || true)"
+          if [ -z "$EP_DIR" ] || [ ! -d "$EP_DIR" ]; then
+            echo "::error::No episode directory found under out/${series}"
+            exit 1
+          fi
+
+          mkdir -p "${EP_DIR}/assets"
+
+          # Inspect what the TTS step actually produced
+          echo "== After TTS, audio files in episode =="
+          ls -al "${EP_DIR}" || true
+          echo "== assets folder =="
+          ls -al "${EP_DIR}/assets" || true
+
+          # If voice.wav already exists in assets, we’re done
+          if [ -f "${EP_DIR}/assets/voice.wav" ]; then
+            echo "voice.wav already present at ${EP_DIR}/assets/voice.wav"
+            exit 0
+          fi
+
+          # Common TTS outputs we’ll normalize to assets/voice.wav
+          CANDIDATES=()
+          CANDIDATES+=("${EP_DIR}/voice.wav")
+          CANDIDATES+=("${EP_DIR}/narration.wav")
+          CANDIDATES+=("${EP_DIR}/audio.wav")
+          CANDIDATES+=("${EP_DIR}/assets/narration.wav")
+          CANDIDATES+=("${EP_DIR}/assets/audio.wav")
+          CANDIDATES+=("${EP_DIR}/voice.mp3")
+          CANDIDATES+=("${EP_DIR}/assets/voice.mp3")
+          CANDIDATES+=("${EP_DIR}/narration.mp3")
+          CANDIDATES+=("${EP_DIR}/assets/narration.mp3")
+
+          FOUND=""
+          for f in "${CANDIDATES[@]}"; do
+            if [ -f "$f" ]; then
+              FOUND="$f"
+              break
+            fi
+          done
+
+          if [ -z "$FOUND" ]; then
+            echo "::error::Could not find any voice audio (voice.wav/mp3, narration.wav/mp3, audio.wav) in ${EP_DIR} or assets/"
+            exit 1
+          fi
+
+          # Convert to WAV if needed, then place exactly at assets/voice.wav
+          if [[ "$FOUND" == *.mp3 ]]; then
+            echo "Converting MP3 to WAV: $FOUND -> ${EP_DIR}/assets/voice.wav"
+            ffmpeg -y -hide_banner -loglevel error -i "$FOUND" -ar 48000 -ac 1 "${EP_DIR}/assets/voice.wav"
+          else
+            echo "Moving WAV to assets/voice.wav: $FOUND"
+            cp -f "$FOUND" "${EP_DIR}/assets/voice.wav"
+          fi
+
+          echo "== Final assets =="
+          ls -al "${EP_DIR}/assets"
+
+
       - name: Make SRT from narration (align to voice.wav)
         env:
           SERIES: ${{ matrix.series }}
