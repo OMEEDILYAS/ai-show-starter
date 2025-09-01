@@ -1,32 +1,83 @@
-name: build-linux-wheels
-on:
-  workflow_dispatch: {}
+name: Build Vendor Wheels                 # Human-friendly name you’ll see in the Actions tab.
 
-jobs:
-  wheels:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
+on:                                       # Triggers for this workflow.
+  workflow_dispatch:                      # 1) Manual run button in GitHub Actions UI.
+    inputs:                               # Optional input so you can pin Python version if you ever want.
+      python_version:                     # Name of the input.
+        description: "Python version (default 3.11)"  # Shown in the UI.
+        required: false                   # It’s optional.
+        default: "3.11"                   # Default to 3.11 to match your runners and project.
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+jobs:                                     # All jobs that make up this workflow.
+  build-wheels-linux:                     # Single job that builds/downloads manylinux wheels.
+    runs-on: ubuntu-latest                # Use Ubuntu so we get manylinux-compatible wheels.
 
-      - name: Build/download manylinux wheels
-        run: |
-          set -e
-          python -m pip install --upgrade pip wheel
-          mkdir -p vendor/wheels
-          # Download prebuilt manylinux wheels only
+    steps:                                # Steps inside this job.
+
+      - name: Check out repo              # Get your repo files onto the runner.
+        uses: actions/checkout@v4         # Standard checkout action.
+
+      - name: Set up Python               # Install the Python version we’ll use to download wheels.
+        uses: actions/setup-python@v5     # Official action to configure Python.
+        with:                             # Inputs to the setup action.
+          python-version: ${{ inputs.python_version || '3.11' }}  # Use input or default to 3.11.
+
+      - name: Show Python version         # Quick sanity check so logs show the interpreter used.
+        run: python -V                    # Prints something like "Python 3.11.x".
+
+      - name: Upgrade pip & wheel         # Ensure latest pip + wheel for better resolver and formats.
+        run: |                            # Use a multiline shell script.
+          python -m pip install --upgrade pip wheel  # Upgrade pip and wheel.
+
+      - name: Clean vendor/wheels folder  # Make sure we start from a clean slate each run.
+        run: |                            # Multiline shell script.
+          rm -rf vendor/wheels            # Remove previous wheels (safe even if folder doesn't exist).
+          mkdir -p vendor/wheels          # Recreate destination folder fresh.
+
+      - name: Download WB3 wheels (new)   # Download the new animation/graphics stack you want.
+        run: |                            # Multiline script using pip download (no install yet).
+          # NOTE: we use --only-binary=:all: so pip picks prebuilt wheels, not source tarballs.
           pip download --only-binary=:all: --dest vendor/wheels \
-            numpy pillow matplotlib networkx graphviz
-          echo "== wheels =="
+            plotly \                      # Plotting lib (we'll render via kaleido offscreen).
+            kaleido \                     # Static image export engine for plotly.
+            moderngl \                    # Modern OpenGL wrapper (fast shader-based visuals).
+            moderngl-window \             # Window/context helper for moderngl (headless use in CI is fine).
+            vpython                       # Easy 3D scenes (has manylinux wheels for 3.11).
+
+      - name: Download legacy wheels      # Keep the previous set you’d already vendored.
+        run: |                            # This keeps your existing pipeline happy.
+          pip download --only-binary=:all: --dest vendor/wheels \
+            numpy \                       # Numerical core (needed by many libs).
+            pillow \                      # Image IO/processing (PIL).
+            matplotlib \                  # 2D plotting; some scenes still rely on it.
+            networkx \                    # Graph utilities (used by diagrams).
+            graphviz \                    # DOT bindings (python package part).
+            contourpy \                   # Matplotlib dependency.
+            cycler \                      # Matplotlib dependency.
+            fonttools \                   # Font handling (matplotlib).
+            kiwisolver \                  # Constraint solver (matplotlib).
+            packaging \                   # Version parsing dependency.
+            pyparsing \                   # Parser dependency (matplotlib etc.).
+            python-dateutil \             # Datetime parsing dependency.
+            six                           # Py2/3 compatibility shim used by deps.
+
+      - name: List wheels                 # Print what we actually downloaded (handy for review).
+        run: |                            # Show directory contents in logs.
+          echo "== vendor/wheels =="
           ls -al vendor/wheels
 
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: vendor-wheels-linux
-          path: vendor/wheels/*.whl
+      - name: Upload wheels artifact      # Make the wheels downloadable from the run page.
+        uses: actions/upload-artifact@v4  # Standard artifact upload action.
+        with:                             # Inputs to the action.
+          name: vendor-wheels             # Artifact name shown in UI.
+          path: vendor/wheels             # Directory to upload.
+
+      - name: Commit wheels back (optional)  # Auto-commit wheels to the repo (you can leave this ON).
+        if: ${{ github.ref == 'refs/heads/WB3' || github.ref == 'refs/heads/main' }} # Only commit from WB3/main.
+        run: |                            # Shell script to commit new wheels.
+          git config user.name  "github-actions[bot]"      # Set author name.
+          git config user.email "github-actions[bot]@users.noreply.github.com"  # Set author email.
+          git add vendor/wheels                                 # Stage wheel files.
+          git commit -m "vendor: refresh wheels (WB3 stack + legacy)" || true   # Commit or no-op if unchanged.
+          git pull --rebase                                      # Rebase in case of concurrent pushes.
+          git push                                               # Push wheels into the branch.
