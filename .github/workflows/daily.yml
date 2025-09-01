@@ -3,7 +3,7 @@ name: Daily Curriculum Reels
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "0 14 * * *"   # run daily at 14:00 UTC (08:00 CST). adjust if you want
+    - cron: "0 14 * * *"   # ~08:00 America/Chicago (adjust if needed)
 
 permissions:
   contents: write          # needed for pushing to gh-pages with GITHUB_TOKEN
@@ -20,7 +20,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: 1
       PYTHONPATH: ${{ github.workspace }}
-      BG_COLOR: "0x101426"   # quote this! see note below
+      BG_COLOR: "0x101426"                 # quote to preserve hex string
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
     steps:
@@ -35,20 +35,44 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install system packages (ffmpeg, graphviz)
+      - name: Install system packages (ffmpeg, graphviz, jq, Cairo/Pango + dev headers)
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ffmpeg graphviz
+          sudo apt-get install -y \
+            ffmpeg graphviz jq \
+            libcairo2 libpango-1.0-0 libpangocairo-1.0-0 \
+            libcairo2-dev libpango1.0-dev pkg-config python3-dev \
+            python3-cairo
 
-      - name: Install Python deps (prefer vendored wheels)
+      - name: Install Python deps (prefer vendored wheels, then build manimpango)
         run: |
+          set -e
           python -m pip install --upgrade pip
+
+          # 1) Prefer vendored wheels you committed in vendor/wheels (downloaded with --no-deps)
           if ls vendor/wheels/*.whl 1> /dev/null 2>&1; then
-            echo "Installing from vendor/wheels/…"
+            echo "Installing vendored wheels from vendor/wheels/…"
             pip install --no-index --find-links vendor/wheels vendor/wheels/*.whl
+          else
+            echo "WARN: No vendored wheels found; falling back to PyPI."
           fi
-          # light deps from index (safe to fetch)
+
+          # 2) Build & install manimpango from source (no wheel for Linux cp311)
+          #    This requires the dev headers installed above.
+          pip install "manimpango==0.6.0"
+
+          # 3) Install manim (lets pip pull its remaining light deps)
+          pip install "manim==0.19.0"
+
+          # 4) Light extras you use elsewhere
           pip install --upgrade pyyaml requests soundfile
+
+      # Ensure minimal runtime state exists (helps first run)
+      - name: Initialize season file if missing
+        run: |
+          mkdir -p data
+          test -f data/season.json || echo '{"next_episode":1}' > data/season.json
+          echo "season.json:" && cat data/season.json || true
 
       # -------------------------
       # 1) Plan next episode for this series
@@ -82,7 +106,7 @@ jobs:
           fi
 
       # -------------------------
-      # 2) Director (strict to source) → narration
+      # 2) Director (strict to textbook excerpt) → narration.txt
       # -------------------------
       - name: Write narration (director, strict)
         if: steps.ep.outputs.found == 'true'
@@ -98,15 +122,35 @@ jobs:
           python planner/make_shotlist.py
 
       # -------------------------
-      # 4) TTS (voice.wav)
+      # 4) TTS (voice.wav) — robust finder + placeholder fallback
       # -------------------------
       - name: Synthesize voice (TTS)
         if: steps.ep.outputs.found == 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          # Use your existing TTS script (adjust path if different in your repo)
-          python tts_openai.py --series "${{ matrix.series }}"
+          set -e
+          series="${{ matrix.series }}"
+          EP="${{ steps.ep.outputs.ep }}"
+          echo "Episode dir: $EP"
+
+          CANDIDATES=("tts_openai.py" "generator/tts_openai.py" "audio/tts_openai.py" "tools/tts_openai.py")
+          FOUND=""
+          for C in "${CANDIDATES[@]}"; do
+            if [ -f "$C" ]; then
+              echo "Using TTS script: $C"
+              python "$C" --series "$series"
+              FOUND="yes"
+              break
+            fi
+          done
+
+          # Fallback: if no TTS script present, create short silent voice.wav so pipeline continues
+          if [ -z "$FOUND" ]; then
+            echo "WARN: No tts_openai.py found; creating placeholder voice.wav (2s)."
+            mkdir -p "$EP/assets"
+            ffmpeg -y -f lavfi -i anullsrc=r=48000:cl=mono -t 2.0 -c:a pcm_s16le "$EP/assets/voice.wav"
+          fi
 
       # -------------------------
       # 5) Background (hardened; then clamp to 90s)
@@ -127,7 +171,7 @@ jobs:
           fi
 
       # -------------------------
-      # 6) Route beats to shots, then cut visuals to narration; clamp
+      # 6) Route beats to shots, then cut visuals; clamp
       # -------------------------
       - name: Route beats to shots
         if: steps.ep.outputs.found == 'true'
@@ -150,7 +194,7 @@ jobs:
           fi
 
       # -------------------------
-      # 7) Build the final (combines bg + visuals + subs/audio)
+      # 7) Build the final (combines bg + visuals + audio/subs)
       # -------------------------
       - name: Build final video
         if: steps.ep.outputs.found == 'true'
@@ -169,16 +213,13 @@ jobs:
           fi
 
       # -------------------------
-      # 8) Resolve final mp4 + caption (uses jq for safety)
+      # 8) Resolve final mp4 & caption (jq)
       # -------------------------
-      - name: Resolve final mp4 & caption (bash + jq)
+      - name: Resolve final mp4 & caption
         if: steps.ep.outputs.found == 'true'
         id: meta
         run: |
           set -euo pipefail
-          sudo apt-get update -y >/dev/null
-          sudo apt-get install -y jq >/dev/null
-
           series="${{ matrix.series }}"
 
           PLAN="$(ls -t out/${series}/ep_*/plan.json 2>/dev/null | head -n1 || true)"
