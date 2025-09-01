@@ -97,7 +97,7 @@ jobs:
         run: |
           set -e
           # Adjust path if your TTS entrypoint differs
-          python tts_openai.py --series "${SERIES}"
+          python generator/tts_openai.py --series "${SERIES}"
 
       - name: Make SRT from narration (align to voice.wav)
         env:
