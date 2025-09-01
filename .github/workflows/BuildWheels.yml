@@ -36,12 +36,7 @@ jobs:
         run: |
           # IMPORTANT: no inline comments on continued lines; each package on its own line.
           # The --only-binary=:all: flag forces pip to choose prebuilt wheels (no source builds).
-          pip download --only-binary=:all: --no-deps --dest vendor/wheels \
-            plotly \
-            kaleido \
-            moderngl \
-            moderngl-window \
-            vpython
+          pip download --only-binary=:all: --dest vendor/wheels -r requirements-vendor.txt
         shell: bash
 
       - name: List wheels (for debugging)

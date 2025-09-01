@@ -1,0 +1,28 @@
+# top-level
+plotly==6.3.0
+kaleido==1.0.0
+moderngl==5.12.0
+moderngl-window==3.1.1
+vpython==7.6.5
+
+# moderngl/vpython runtime helpers
+pyglet==2.1.8
+pyglm==2.8.2
+glcontext==3.0.0
+
+# plotting base (matplotlib + friends)
+matplotlib==3.10.5
+numpy==2.3.2
+pillow==11.3.0
+kiwisolver==1.4.9
+contourpy==1.3.3
+cycler==0.12.1
+fonttools==4.59.2
+packaging==25.0
+pyparsing==3.2.3
+python-dateutil==2.9.0.post0
+six==1.17.0
+
+# handy, already present, used elsewhere
+networkx==3.5
+graphviz==0.21
