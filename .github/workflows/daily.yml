@@ -89,7 +89,17 @@ jobs:
           set -e
           python planner/agent_director.py
 
-      - name: Make SRT from narration
+      # ---------- TTS MUST RUN BEFORE SRT ----------
+      - name: Voiceover (TTS)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SERIES: ${{ matrix.series }}
+        run: |
+          set -e
+          # Adjust path if your TTS entrypoint differs
+          python tts_openai.py --series "${SERIES}"
+
+      - name: Make SRT from narration (align to voice.wav)
         env:
           SERIES: ${{ matrix.series }}
         run: |
@@ -134,16 +144,7 @@ jobs:
           set -e
           python assembly/cut_visuals.py --series "${SERIES}"
 
-      # ---------- TTS & FINAL ASSEMBLY ----------
-      - name: Voiceover (TTS)
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          SERIES: ${{ matrix.series }}
-        run: |
-          set -e
-          # adjust if your TTS entrypoint differs
-          python tts_openai.py --series "${SERIES}"
-
+      # ---------- FINAL ASSEMBLY ----------
       - name: Build final MP4
         env:
           SERIES: ${{ matrix.series }}
@@ -187,7 +188,6 @@ jobs:
           if [ -n "$PLAN" ]; then
             EP_DIR="$(dirname "$PLAN")"
           else
-            # derive ep dir from MP4 path (…/ep_xxx/final/xxx.mp4 → …/ep_xxx)
             EP_DIR="$(dirname "$(dirname "$MP4")")"
           fi
 
@@ -204,7 +204,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      # ---------- PUBLISH TO GH-PAGES (tokened remote; no heredocs) ----------
+      # ---------- PUBLISH TO GH-PAGES ----------
       - name: Push MP4 to gh-pages
         id: publish
         env:
@@ -276,4 +276,3 @@ jobs:
             python publisher/post_instagram.py "$URL" "$CAPTION"
           else
             echo "[dry-run] Would post for ${series}: $URL"
-          fi
