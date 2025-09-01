@@ -60,7 +60,7 @@ jobs:
             python -m pip install --no-index --find-links vendor/wheels \
               numpy pillow matplotlib networkx graphviz \
               plotly kaleido vpython moderngl moderngl-window \
-              pyyaml requests orjson
+              pyyaml requests orjson openai pandas
           else
             echo "vendor/wheels not found; installing from PyPI…"
             python -m pip install \
