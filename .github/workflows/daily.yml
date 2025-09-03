@@ -5,11 +5,11 @@ on:
   workflow_dispatch:
     inputs:
       series:
-        description: "Choose a single series to run (math_of_ML | MAS | mixed). Leave empty to run all."
+        description: "Choose one series (math_of_ML | MAS | mixed). Leave empty to run all."
         required: false
         default: ""
   schedule:
-    # Run once a day at 15:05 UTC (10:05a Chicago)
+    # 10:05a Chicago (15:05 UTC)
     - cron: "5 15 * * *"
 
 concurrency:
@@ -36,6 +36,7 @@ jobs:
         series: ${{ fromJSON( (github.event.inputs.series != '' && format('["{0}"]', github.event.inputs.series)) || '["math_of_ML","MAS","mixed"]' ) }}
 
     steps:
+      # --------- CHECKOUT & PYTHON ---------
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
@@ -46,10 +47,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install system deps (ffmpeg, fonts, jq)
+      - name: Install system deps (ffmpeg, fonts, jq, curl)
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ffmpeg fonts-dejavu-core jq
+          sudo apt-get install -y ffmpeg fonts-dejavu-core jq curl
 
       - name: Install Python deps (prefer vendor wheels)
         run: |
@@ -60,13 +61,13 @@ jobs:
             python -m pip install --no-index --find-links vendor/wheels \
               numpy pillow matplotlib networkx graphviz \
               plotly kaleido vpython moderngl moderngl-window \
-              pyyaml requests orjson openai pandas
+              pyyaml requests orjson pandas openai
           else
             echo "vendor/wheels not found; installing from PyPI…"
             python -m pip install \
               numpy pillow matplotlib networkx graphviz \
               plotly kaleido vpython moderngl moderngl-window \
-              pyyaml requests orjson openai pandas
+              pyyaml requests orjson pandas openai
           fi
 
       - name: Prepare folders
@@ -74,7 +75,7 @@ jobs:
           set -e
           mkdir -p "out/${{ matrix.series }}"
 
-      # ---------- PLAN & NARRATION ----------
+      # --------- PLAN & NARRATION ----------
       - name: Plan next episode
         env:
           SERIES: ${{ matrix.series }}
@@ -89,19 +90,20 @@ jobs:
           set -e
           python planner/agent_director.py
 
-      # ---------- TTS MUST RUN BEFORE SRT ----------
+      # --------- TTS BEFORE SRT ----------
       - name: Voiceover (TTS)
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SERIES: ${{ matrix.series }}
         run: |
           set -e
-          # Adjust path if your TTS entrypoint differs
-          python generator/tts_openai.py --series "${SERIES}"
+          # Use your existing TTS entrypoint; it may write different filenames/locations.
+          python tts_openai.py --series "${SERIES}" || true
 
-      - name: Normalize voice path for SRT
+      - name: Ensure voice.wav (normalize or synthesize via OpenAI, bash-only)
         env:
           SERIES: ${{ matrix.series }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -e
           series="${SERIES}"
@@ -112,58 +114,76 @@ jobs:
             echo "::error::No episode directory found under out/${series}"
             exit 1
           fi
+          ASSETS="${EP_DIR}/assets"
+          mkdir -p "$ASSETS"
 
-          mkdir -p "${EP_DIR}/assets"
-
-          # Inspect what the TTS step actually produced
-          echo "== After TTS, audio files in episode =="
+          echo "== EP_DIR: ${EP_DIR} =="
+          echo "== EP_DIR listing =="
           ls -al "${EP_DIR}" || true
-          echo "== assets folder =="
-          ls -al "${EP_DIR}/assets" || true
+          echo "== assets listing =="
+          ls -al "${ASSETS}" || true
 
-          # If voice.wav already exists in assets, we’re done
-          if [ -f "${EP_DIR}/assets/voice.wav" ]; then
-            echo "voice.wav already present at ${EP_DIR}/assets/voice.wav"
+          # If already present, done.
+          if [ -f "${ASSETS}/voice.wav" ]; then
+            echo "voice.wav already present"
             exit 0
           fi
 
-          # Common TTS outputs we’ll normalize to assets/voice.wav
-          CANDIDATES=()
-          CANDIDATES+=("${EP_DIR}/voice.wav")
-          CANDIDATES+=("${EP_DIR}/narration.wav")
-          CANDIDATES+=("${EP_DIR}/audio.wav")
-          CANDIDATES+=("${EP_DIR}/assets/narration.wav")
-          CANDIDATES+=("${EP_DIR}/assets/audio.wav")
-          CANDIDATES+=("${EP_DIR}/voice.mp3")
-          CANDIDATES+=("${EP_DIR}/assets/voice.mp3")
-          CANDIDATES+=("${EP_DIR}/narration.mp3")
-          CANDIDATES+=("${EP_DIR}/assets/narration.mp3")
-
+          # Try to normalize common TTS outputs → assets/voice.wav
           FOUND=""
-          for f in "${CANDIDATES[@]}"; do
-            if [ -f "$f" ]; then
-              FOUND="$f"
-              break
-            fi
+          for f in \
+            "${EP_DIR}/voice.wav" "${EP_DIR}/narration.wav" "${EP_DIR}/audio.wav" \
+            "${ASSETS}/narration.wav" "${ASSETS}/audio.wav" \
+            "${EP_DIR}/voice.mp3" "${ASSETS}/voice.mp3" \
+            "${EP_DIR}/narration.mp3" "${ASSETS}/narration.mp3"
+          do
+            if [ -f "$f" ]; then FOUND="$f"; break; fi
           done
 
-          if [ -z "$FOUND" ]; then
-            echo "::error::Could not find any voice audio (voice.wav/mp3, narration.wav/mp3, audio.wav) in ${EP_DIR} or assets/"
+          if [ -n "$FOUND" ]; then
+            if [[ "$FOUND" == *.mp3 ]]; then
+              echo "Converting MP3 → WAV: $FOUND"
+              ffmpeg -y -hide_banner -loglevel error -i "$FOUND" -ar 48000 -ac 1 "${ASSETS}/voice.wav"
+            else
+              echo "Copying WAV: $FOUND"
+              cp -f "$FOUND" "${ASSETS}/voice.wav"
+            fi
+            echo "Ready: ${ASSETS}/voice.wav"
+            ls -al "${ASSETS}"
+            exit 0
+          fi
+
+          # Fallback synth via OpenAI TTS if nothing found.
+          # Requires narration text and OPENAI_API_KEY.
+          TXT="${ASSETS}/narration.txt"
+          if [ ! -f "$TXT" ]; then
+            echo "::error::No narration.txt to synthesize at ${TXT}"
+            exit 1
+          fi
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::OPENAI_API_KEY missing for fallback TTS"
             exit 1
           fi
 
-          # Convert to WAV if needed, then place exactly at assets/voice.wav
-          if [[ "$FOUND" == *.mp3 ]]; then
-            echo "Converting MP3 to WAV: $FOUND -> ${EP_DIR}/assets/voice.wav"
-            ffmpeg -y -hide_banner -loglevel error -i "$FOUND" -ar 48000 -ac 1 "${EP_DIR}/assets/voice.wav"
-          else
-            echo "Moving WAV to assets/voice.wav: $FOUND"
-            cp -f "$FOUND" "${EP_DIR}/assets/voice.wav"
+          echo "Synthesizing voice.wav via OpenAI TTS fallback…"
+          # Build JSON body with jq (no heredoc Python)
+          BODY="$(jq -n --arg model "tts-1" --arg voice "alloy" --arg input "$(< "$TXT")" --arg format "wav" \
+            '{model:$model, voice:$voice, input:$input, format:$format}')"
+
+          # POST /v1/audio/speech → binary WAV
+          curl -sS -X POST "https://api.openai.com/v1/audio/speech" \
+            -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --data "${BODY}" \
+            --output "${ASSETS}/voice.wav"
+
+          if [ ! -s "${ASSETS}/voice.wav" ]; then
+            echo "::error::Fallback TTS did not produce audio"
+            exit 1
           fi
 
           echo "== Final assets =="
-          ls -al "${EP_DIR}/assets"
-
+          ls -al "${ASSETS}"
 
       - name: Make SRT from narration (align to voice.wav)
         env:
@@ -179,7 +199,7 @@ jobs:
           set -e
           python generator/route_shots.py --series "${SERIES}"
 
-      # ---------- WB3: LLM → CODE → RENDER ----------
+      # --------- WB3: LLM → CODE → RENDER ----------
       - name: Generate per-beat visuals code (LLM → Python)
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -195,7 +215,7 @@ jobs:
           set -e
           python generator/render_visuals.py --series "${SERIES}"
 
-      # ---------- BACKGROUND & CUT ----------
+      # --------- BACKGROUND & CUT ----------
       - name: Generate background (fallback/safety)
         env:
           SERIES: ${{ matrix.series }}
@@ -210,7 +230,7 @@ jobs:
           set -e
           python assembly/cut_visuals.py --series "${SERIES}"
 
-      # ---------- FINAL ASSEMBLY ----------
+      # --------- FINAL ASSEMBLY ----------
       - name: Build final MP4
         env:
           SERIES: ${{ matrix.series }}
@@ -225,7 +245,7 @@ jobs:
           set -e
           python assembly/validate_video.py --series "${SERIES}"
 
-      # ---------- RESOLVE OUTPUT & CAPTION (bash + jq; no inline Python) ----------
+      # --------- RESOLVE OUTPUT & CAPTION (bash + jq only) ----------
       - name: Resolve final mp4 & caption
         id: meta
         env:
@@ -234,13 +254,11 @@ jobs:
           set -e
           series="${SERIES}"
 
-          # Latest plan.json
           PLAN="$(ls -t "out/${series}"/ep_*/plan.json 2>/dev/null | head -n1 || true)"
           MP4=""
           if [ -n "$PLAN" ] && [ -f "$PLAN" ]; then
             MP4="$(jq -r '.video_path // ""' "$PLAN")"
           fi
-          # Fallback: latest mp4 in final/
           if [ -z "$MP4" ] || [ ! -f "$MP4" ]; then
             MP4="$(ls -t "out/${series}"/final/*.mp4 2>/dev/null | head -n1 || true)"
           fi
@@ -249,7 +267,6 @@ jobs:
             exit 1
           fi
 
-          FILE_BASENAME="$(basename "$MP4")"
           EP_DIR=""
           if [ -n "$PLAN" ]; then
             EP_DIR="$(dirname "$PLAN")"
@@ -263,14 +280,13 @@ jobs:
 
           {
             echo "mp4=$MP4"
-            echo "file=$FILE_BASENAME"
             echo "ep_dir=$EP_DIR"
             echo "caption<<EOF"
             echo "$CAPTION"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      # ---------- PUBLISH TO GH-PAGES ----------
+      # --------- PUBLISH TO GH-PAGES ----------
       - name: Push MP4 to gh-pages
         id: publish
         env:
@@ -317,7 +333,7 @@ jobs:
             echo "url=$URL"
           } >> "$GITHUB_OUTPUT"
 
-      # ---------- POST TO INSTAGRAM ----------
+      # --------- POST TO INSTAGRAM ----------
       - name: Post to Instagram (math_of_ML real; others dry)
         if: always()
         env:
