@@ -278,6 +278,20 @@ jobs:
         run: |
           set -e
           python generator/gen_visuals_code.py --series "${SERIES}"
+      
+      - name: Debug generated visuals code (head)
+        env:
+          SERIES: ${{ matrix.series }}
+        run: |
+          set -e
+          EP_DIR="$(ls -d out/${SERIES}/ep_* 2>/dev/null | sort | tail -n1 || true)"
+          CODE="${EP_DIR}/assets/visuals_code.py"
+          echo "== Showing first 60 lines of visuals_code.py =="
+          nl -ba "$CODE" | sed -n '1,60p' || true
+          if [ -f "${EP_DIR}/assets/visuals_code_error.txt" ]; then
+            echo "== visuals_code_error.txt =="
+            cat "${EP_DIR}/assets/visuals_code_error.txt" || true
+          fi
 
       - name: Render per-beat visuals
         env:
