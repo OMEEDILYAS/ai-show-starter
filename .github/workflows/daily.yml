@@ -83,34 +83,51 @@ jobs:
           set -e
           python planner/plan_next.py --series "${SERIES}"
       
-      - name: Sync latest plan.json
+      - name: Sync latest → newest episode (plan.json)
+        env:
+          SERIES: ${{ matrix.series }}
         run: |
           set -e
-          series="${SERIES}"
+          series="${SERIES:?SERIES env missing}"
           root="out/${series}"
+
+          # Ensure at least one episode exists; if not, create one now
+          if ! ls -d "${root}"/ep_* >/dev/null 2>&1; then
+            echo "No episodes found for ${series}; running planner to create one…"
+            python planner/plan_next.py --series "${series}"
+          fi
 
           # Find newest ep_*/ dir
           EP_DIR="$(ls -d "${root}"/ep_* 2>/dev/null | sort | tail -n1 || true)"
           if [ -z "$EP_DIR" ] || [ ! -d "$EP_DIR" ]; then
-            echo "::error::No episode directory found under ${root}"
+            echo "::error::No episode directory found under ${root} even after planning"
             exit 1
           fi
           echo "Newest episode: $EP_DIR"
 
-          # Ensure a clean latest/ pointer
+          # Clean previous latest (dir/symlink/file)
           rm -rf "${root}/latest"
 
           # Try symlink first
           ln -s "$(basename "$EP_DIR")" "${root}/latest" || true
 
-          # If symlink not supported, fallback to directory copy
-          if [ ! -e "${root}/latest/plan.json" ]; then
+          # If latest is a symlink, we're done (plan.json accessible via link)
+          if [ -L "${root}/latest" ]; then
+            echo "latest/ is a symlink to: $(readlink -f "${root}/latest")"
+          else
+            # Fallback: make real dir and copy plan.json
             mkdir -p "${root}/latest"
-            cp -f "${EP_DIR}/plan.json" "${root}/latest/plan.json"
+            if [ -f "${EP_DIR}/plan.json" ]; then
+              cp -f "${EP_DIR}/plan.json" "${root}/latest/plan.json"
+            else
+              echo "::error::Missing ${EP_DIR}/plan.json"
+              exit 1
+            fi
           fi
 
           echo "latest/ points to: ${root}/latest"
           ls -al "${root}" || true
+          echo "Contents of latest/:"
           ls -al "${root}/latest" || true
 
 
