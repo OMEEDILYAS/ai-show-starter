@@ -196,7 +196,7 @@ def main() -> int:
     # Always write the executable code to visuals_code.py
     out_py = assets / "visuals_code.py"
     out_py.write_text(final_code, encoding="utf-8")
-    print(f"[gen_visuals_code] wrote {out_py.relative_to(Path.cwd())}")
+    print(f"[gen_visuals_code] wrote {out_py}")
 
     return 0
 
