@@ -279,6 +279,36 @@ jobs:
           set -e
           python generator/gen_visuals_code.py --series "${SERIES}"
       
+      - name: Sync latest → visuals_code.py
+        env:
+          SERIES: ${{ matrix.series }}
+        run: |
+          set -e
+          series="${SERIES:?SERIES env missing}"
+          root="out/${series}"
+          EP_DIR="$(ls -d "${root}"/ep_* 2>/dev/null | sort | tail -n1 || true)"
+          if [ -z "$EP_DIR" ] || [ ! -d "$EP_DIR" ]; then
+            echo "::error::No episode directory found under ${root}"
+            exit 1
+          fi
+          SRC="${EP_DIR}/assets/visuals_code.py"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::visuals_code.py not found at $SRC (did gen_visuals_code run?)"
+            exit 1
+          fi
+          mkdir -p "${root}/latest"
+          # If latest is a symlink to the episode, we don't need to copy.
+          if [ -L "${root}/latest" ]; then
+            echo "latest/ is a symlink; visuals_code.py already visible via ${root}/latest"
+            ls -al "${root}/latest" || true
+          else
+            cp -f "$SRC" "${root}/latest/visuals_code.py"
+            echo "Copied $SRC -> ${root}/latest/visuals_code.py"
+          fi
+          echo "== latest listing =="
+          ls -al "${root}/latest" || true
+
+      
       - name: Debug generated visuals code (head)
         env:
           SERIES: ${{ matrix.series }}
