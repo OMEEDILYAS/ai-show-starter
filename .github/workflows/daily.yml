@@ -82,6 +82,49 @@ jobs:
         run: |
           set -e
           python planner/plan_next.py --series "${SERIES}"
+      
+      - name: Point latest → newest episode (plan.json)
+        env:
+          SERIES: ${{ matrix.series }}
+        run: |
+          set -e
+          series="${SERIES}"
+          root="out/${series}"
+
+          # Find newest ep_*/ dir
+          EP_DIR="$(ls -d "${root}"/ep_* 2>/dev/null | sort | tail -n1 || true)"
+          if [ -z "$EP_DIR" ] || [ ! -d "$EP_DIR" ]; then
+            echo "::error::No episode directory found under ${root}"
+            exit 1
+          fi
+          echo "Newest episode: $EP_DIR"
+
+          # Ensure a clean latest/ pointer
+          if [ -L "${root}/latest" ] || [ -d "${root}/latest" ] || [ -f "${root}/latest" ]; then
+            rm -rf "${root}/latest"
+          fi
+
+          # Try to create a symlink latest/ → ep_xxx/
+          ln -s "$(basename "$EP_DIR")" "${root}/latest" || true
+
+          # If symlink didn’t land, fall back to a real directory with copied plan.json
+          if [ ! -e "${root}/latest" ]; then
+            mkdir -p "${root}/latest"
+          fi
+
+          # Always make sure latest/plan.json exists
+          if [ -f "${EP_DIR}/plan.json" ]; then
+            cp -f "${EP_DIR}/plan.json" "${root}/latest/plan.json"
+          else
+            echo "::error::Missing ${EP_DIR}/plan.json"
+            exit 1
+          fi
+
+          echo "latest/ points to: ${root}/latest"
+          ls -al "${root}" || true
+          echo "Contents of latest/:"
+          ls -al "${root}/latest" || true
+
 
       - name: Write narration (LLM)
         env:
