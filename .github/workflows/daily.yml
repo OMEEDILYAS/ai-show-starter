@@ -192,6 +192,22 @@ jobs:
           set -e
           python generator/make_srt.py --series "${SERIES}"
 
+      - name: Build shotlist (beats)
+        env:
+          SERIES: ${{ matrix.series }}
+        run: |
+          set -e
+          python generator/make_shotlist.py --series "${SERIES}"
+      
+      - name: Debug assets before routing
+        env:
+          SERIES: ${{ matrix.series }}
+        run: |
+          set -e
+          EP_DIR="$(ls -d out/${SERIES}/ep_* 2>/dev/null | sort | tail -n1 || true)"
+          echo "EP_DIR=$EP_DIR"
+          ls -al "$EP_DIR/assets" || true
+
       - name: Route shots (beats & timings)
         env:
           SERIES: ${{ matrix.series }}
