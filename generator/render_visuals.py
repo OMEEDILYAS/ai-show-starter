@@ -5,9 +5,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--series", required=True)
     args = ap.parse_args()
-
+    # visual_code is in the root/visuals_code.py
     plan_path = Path(f"out/{args.series}/latest/plan.json")
-    code_file = plan_path.parent / "visuals_code.py"
+    code_file = plan_path.root / "visuals_code.py"
     if not code_file.exists():
         print("[render_visuals] ERROR: visuals_code.py not found at", code_file)
         sys.exit(1)
