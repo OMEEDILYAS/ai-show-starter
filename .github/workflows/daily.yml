@@ -296,17 +296,16 @@ jobs:
             echo "::error::visuals_code.py not found at $SRC (did gen_visuals_code run?)"
             exit 1
           fi
-          mkdir -p "${root}/latest"
-          # If latest is a symlink to the episode, we don't need to copy.
-          if [ -L "${root}/latest" ]; then
-            echo "latest/ is a symlink; visuals_code.py already visible via ${root}/latest"
-            ls -al "${root}/latest" || true
-          else
-            cp -f "$SRC" "${root}/latest/visuals_code.py"
-            echo "Copied $SRC -> ${root}/latest/visuals_code.py"
-          fi
+          mkdir -p "${root}/latest" "${root}/latest/assets"
+          # Always copy to a flat path so render step can rely on it
+          cp -f "$SRC" "${root}/latest/visuals_code.py"
+          # Also keep the original path available via latest/assets for other tools
+          cp -f "$SRC" "${root}/latest/assets/visuals_code.py"
+
           echo "== latest listing =="
           ls -al "${root}/latest" || true
+          echo "== latest/assets listing =="
+          ls -al "${root}/latest/assets" || true
 
       
       - name: Debug generated visuals code (head)
